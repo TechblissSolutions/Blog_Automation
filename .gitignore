@@ -1,0 +1,8 @@
+# n8n workflow export — contains credential IDs and internal site config, keep private
+Blog_Automation_Techbliss.json
+
+# Common n8n / local artifacts
+.env
+*.env.local
+node_modules/
+.DS_Store
