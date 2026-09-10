@@ -1,0 +1,1667 @@
+{
+  "name": "Blog_Automation_Techbliss",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const form = $input.first().json;\n\nconst errors = [];\n\nconst topic = (form['Blog Topic'] || '').toString().trim();\nif (!topic) errors.push('No blog topic provided.');\n\nlet wordCount = parseInt(form['Word Count'], 10);\nif (isNaN(wordCount) || wordCount < 800) wordCount = 1200;\nif (wordCount > 3000) wordCount = 3000;\n\nconst targetAudience = (form['Target Audience'] || '').toString().trim() || 'general readers';\nconst blogCategory = (form['Blog Category'] || '').toString().trim() || 'General';\nconst tone = (form['Tone'] || '').toString().trim() || 'professional yet conversational';\n\n// ── Robust URL cleanup (no dependency on the URL class — some n8n sandboxes don't expose it) ──\nlet siteUrl = (form['WordPress Site URL'] || '').toString();\n\nsiteUrl = siteUrl\n  .replace(/[\\u200B-\\u200D\\uFEFF\\u00A0]/g, '')   // zero-width & non-breaking spaces\n  .replace(/[\"\"'']/g, '')                          // curly quotes\n  .replace(/[<>\\[\\]]/g, '')                          // stray brackets\n  .trim();\n\nif (!siteUrl) errors.push('No WordPress Site URL provided.');\n\n// Auto-add https:// if the protocol was left off\nif (siteUrl && !/^https?:\\/\\//i.test(siteUrl)) {\n  siteUrl = 'https://' + siteUrl;\n}\n\n// Strip trailing slash(es)\nsiteUrl = siteUrl.replace(/\\/+$/, '');\n\n// Extract hostname via regex instead of the URL class\nlet siteDomain = '';\nif (siteUrl) {\n  const match = siteUrl.match(/^https?:\\/\\/([^\\/\\s?#]+)/i);\n  if (match) {\n    siteDomain = match[1].replace(/:\\d+$/, '').replace(/^www\\./i, '').toLowerCase();\n  }\n}\n\nif (siteUrl && !siteDomain) {\n  errors.push(`WordPress Site URL is not a valid URL. Received: \"${siteUrl}\"`);\n}\n\nif (errors.length) throw new Error(errors.join(' | '));\n\nreturn [{ json: {\n  primaryKeyword: topic.toLowerCase(),\n  targetAudience,\n  wordCount,\n  blogCategory,\n  tone,\n  siteUrl,\n  siteDomain,\n  requestId: `blog_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,\n  timestamp: new Date().toISOString(),\n  originalFormInput: form\n}}];"
+      },
+      "id": "3bdee323-d243-4307-8600-bbf241f6d5e6",
+      "name": "Input Validation1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6432,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.primaryKeyword }}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{ $json.siteUrl }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "9b653ebc-8b19-489a-95de-4a25eae2f7e9",
+      "name": "Validation Gate1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -6208,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "err-1",
+              "name": "error",
+              "value": "Validation failed: primaryKeyword or siteUrl is empty. Please fill in the form completely.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5077635f-f33d-4406-96a0-c51e533c1d90",
+      "name": "Validation Error Response1",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -5984,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://serpapi.com/search.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "serpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $node['Input Validation1'].json.primaryKeyword }}"
+            },
+            {
+              "name": "num",
+              "value": "10"
+            },
+            {
+              "name": "gl",
+              "value": "us"
+            },
+            {
+              "name": "hl",
+              "value": "en"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "156727bd-fef6-4a1f-a605-8c71f2f4bb97",
+      "name": "SERP Fetch (SerpAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -5984,
+        -272
+      ],
+      "credentials": {
+        "serpApi": {
+          "id": "xA6OMSTw9rfPO4St",
+          "name": "SerpAPI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const serpData = $input.first().json;\nconst organicResults = serpData.organic_results || [];\nconst prev = $node['Input Validation1'].json;\nconst siteDomain = prev.siteDomain || '';\n\nconst competitors = organicResults.slice(0, 10).map(r => ({\n  position: r.position,\n  title: r.title || '',\n  snippet: r.snippet || '',\n  link: r.link || ''\n}));\n\nconst competitorCorpus = competitors.map(c => c.snippet).join(' ');\n\nconst allTitleWords = competitors\n  .flatMap(c => c.title.toLowerCase().split(/[\\s\\-|:,]+/))\n  .filter(w => w.length > 4);\nconst wordFreq = {};\nallTitleWords.forEach(w => { wordFreq[w] = (wordFreq[w] || 0) + 1; });\nconst topCompetitorTerms = Object.entries(wordFreq)\n  .sort((a,b) => b[1]-a[1])\n  .slice(0, 15)\n  .map(([word]) => word);\n\n// Build real external link candidates from high-authority organic results,\n// excluding the user's own site so we never \"externally\" link to ourselves.\nfunction hostnameOf(url) {\n  try { return new URL(url).hostname.replace(/^www\\./, ''); } catch (e) { return ''; }\n}\nconst externalLinkCandidates = competitors\n  .filter(c => c.link && hostnameOf(c.link) && hostnameOf(c.link) !== siteDomain)\n  .slice(0, 6)\n  .map(c => ({ title: c.title, url: c.link, domain: hostnameOf(c.link) }));\n\nreturn [{ json: {\n  ...prev,\n  serpData: { competitors, topCompetitorTerms, competitorCorpus: competitorCorpus.slice(0, 3000) },\n  externalLinkCandidates\n}}];"
+      },
+      "id": "b02f2730-0606-4b91-abfe-c510e9a931a3",
+      "name": "Parse SERP Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5760,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 10,
+        "options": {}
+      },
+      "id": "a8b2fd25-3498-470f-a07a-50c4a4d61c0c",
+      "name": "Get Existing WordPress Posts",
+      "type": "n8n-nodes-base.wordpress",
+      "typeVersion": 1,
+      "position": [
+        -5536,
+        -272
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "2oGlMXUF7F6jUcuX",
+          "name": "Wordpress account 5"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const posts = $input.all().map(item => item.json).filter(p => p && p.link);\nconst prev = $node['Parse SERP Data'].json;\nconst kw = (prev.primaryKeyword || '').toLowerCase();\nconst kwWords = kw.split(/\\s+/).filter(w => w.length > 2);\n\nfunction score(post) {\n  const title = (post.title && post.title.rendered ? post.title.rendered : (post.title || '')).toLowerCase();\n  const excerpt = (post.excerpt && post.excerpt.rendered ? post.excerpt.rendered : '').toLowerCase();\n  let s = 0;\n  if (title.includes(kw)) s += 10;\n  kwWords.forEach(w => {\n    if (title.includes(w)) s += 2;\n    if (excerpt.includes(w)) s += 1;\n  });\n  return s;\n}\n\nconst scored = posts\n  .map(p => ({\n    title: (p.title && p.title.rendered) ? p.title.rendered : (p.title || 'Untitled'),\n    url: p.link,\n    relevance: score(p)\n  }))\n  .filter(p => p.relevance > 0)\n  .sort((a, b) => b.relevance - a.relevance)\n  .slice(0, 8);\n\nreturn [{ json: { ...prev, internalLinkCandidates: scored } }];"
+      },
+      "id": "b84bc2b1-8bd8-4849-ac9a-161599bea3f1",
+      "name": "Build Internal Link Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5312,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an expert SEO strategist and content architect. Analyse the keyword and competitor data below, then return ONE valid JSON object — no markdown, no extra text, no code fences.\n\nPrimary keyword (short, real SEO term - this MUST be the actual keyword you optimize for and repeat naturally): {{ $json.primaryKeyword }}\nTarget audience: {{ $json.targetAudience }}\nCreative title inspiration (a polished headline idea - use this for TONE and ANGLE only, do NOT force this exact long phrase to repeat verbatim through the article): {{ $node['Input Validation1'].json.originalFormInput.TitleHint || '' }}\nCurated longtail/secondary keywords to weave in where natural (pre-researched, real search terms): {{ $node['Input Validation1'].json.originalFormInput.SecondaryKeywords || '' }}\n\nTop competitor titles:\n{{ $json.serpData.competitors.slice(0,5).map(c => c.position + '. ' + c.title).join('\\n') }}\n\nFrequent competitor terms: {{ $json.serpData.topCompetitorTerms.join(', ') }}\n\nBuild an outline for a focused, high-quality guide (1200-1500 words) similar in style to top-ranking agency blogs: strong hook intro, a couple of pillar points, one comparison table, a pull-quote stat, mid-article CTA, FAQ with schema-ready Q&A, related-topics close. Keep it tight — every section must earn its place, no padding.\n\nReturn ONLY this JSON structure (raw JSON, no markdown, no backticks):\n{\n  \"primaryKeyword\": \"<keyword>\",\n  \"semanticCluster\": [\"term1\",\"term2\",\"term3\",\"term4\",\"term5\",\"term6\"],\n  \"longTailKeywords\": [\"long tail 1\",\"long tail 2\",\"long tail 3\",\"long tail 4\"],\n  \"competitorGaps\": [\"gap topic 1\",\"gap topic 2\",\"gap topic 3\"],\n  \"searchIntent\": \"informational\",\n  \"targetKeywordDensity\": 1.5,\n  \"seoTitle\": \"SEO title under 60 chars containing the keyword\",\n  \"metaDescription\": \"Meta description 150-160 chars with keyword and clear value proposition\",\n  \"slugUrl\": \"url-friendly-slug-with-keyword\",\n  \"h1Tag\": \"H1 heading that naturally contains the keyword\",\n  \"excerpt\": \"A compelling 2-3 sentence excerpt for the post that includes the keyword\",\n  \"hookIntro\": \"A 2-3 sentence attention-grabbing opening statistic or pain-point statement to open the article before any heading\",\n  \"sections\": [\n    { \"h2\": \"What is <keyword>? Why it matters\", \"subsections\": [{ \"h3\": \"H3 subheading\" }], \"includeTable\": false, \"includeStatCallout\": true },\n    { \"h2\": \"Second H2 section (core concept or comparison)\", \"subsections\": [{ \"h3\": \"H3 subheading\" }], \"includeTable\": true, \"includeStatCallout\": false },\n    { \"h2\": \"Third H2 section (practical steps or how to choose)\", \"subsections\": [{ \"h3\": \"Step 1\" },{ \"h3\": \"Step 2\" },{ \"h3\": \"Step 3\" }], \"includeTable\": false, \"includeStatCallout\": false },\n    { \"h2\": \"Conclusion: keyword final thoughts\", \"subsections\": [], \"includeTable\": false, \"includeStatCallout\": false }\n  ],\n  \"faqQuestions\": [\"FAQ question 1?\",\"FAQ question 2?\",\"FAQ question 3?\"],\n  \"tags\": [\"tag1\", \"tag2\", \"tag3\", \"tag4\", \"tag5\"],\n  \"featuredImagePrompt\": \"Detailed image prompt for the featured/hero image. MUST include: clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (confident blue #1E88E5 and warm amber/orange #F5A623 used in UI elements, icons, or graphic accents — not as a filter over the whole image), polished SaaS-website aesthetic, no text overlay, no watermark, 16:9 landscape composition. Describe a specific scene relevant to the topic.\",\n  \"inContentImagePrompts\": [\n    \"Image prompt for section 1 concept. MUST include: clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (confident blue #1E88E5 and warm amber/orange #F5A623 used in UI elements, icons, or graphic accents — not as a filter over the whole image), polished SaaS-website aesthetic, no text overlay, no watermark, 16:9 landscape composition. Describe a DIFFERENT specific scene/composition than the featured image and the other two prompts below (vary: subject, camera angle, setting, and props) so the three in-content images never look repetitive.\",\n    \"Image prompt for section 3 comparison/options. MUST include: clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (confident blue #1E88E5 and warm amber/orange #F5A623 used in UI elements, icons, or graphic accents — not as a filter over the whole image), polished SaaS-website aesthetic, no text overlay, no watermark, 16:9 landscape composition. Must depict a visually distinct scene from the other image prompts (different subject/setting/angle).\",\n    \"Image prompt for section 4 step-by-step process. MUST include: clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (confident blue #1E88E5 and warm amber/orange #F5A623 used in UI elements, icons, or graphic accents — not as a filter over the whole image), polished SaaS-website aesthetic, no text overlay, no watermark, 16:9 landscape composition. Must depict a visually distinct scene from the other image prompts (different subject/setting/angle).\"\n  ],\n  \"ctaText\": \"A short, punchy mid-article call-to-action inviting the reader to contact/consult, referencing the primary keyword topic\"\n}",
+        "options": {
+          "systemMessage": "You are an SEO strategist. Return ONLY raw JSON — no markdown, no code fences, no extra text whatsoever."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -5088,
+        -272
+      ],
+      "id": "d68114b5-772f-44a6-8cf0-6f86a2ce309b",
+      "name": "SEO Outline Agent"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -5024,
+        -48
+      ],
+      "id": "6c29082a-2d6c-45a7-835c-c4a04a60b720",
+      "name": "Groq (SEO Outline) [1]",
+      "credentials": {
+        "groqApi": {
+          "id": "CfJpc3GUvqNjdHJ4",
+          "name": "Groq account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output || $input.first().json.response || $input.first().json.text || '{}';\nlet parsed;\ntry {\n  const cleaned = raw.replace(/```json|```/gi, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch(e) {\n  const kw = $node['Input Validation1'].json.primaryKeyword;\n  parsed = {\n    primaryKeyword: kw,\n    semanticCluster: [],\n    longTailKeywords: [],\n    competitorGaps: [],\n    searchIntent: 'informational',\n    targetKeywordDensity: 1.5,\n    seoTitle: kw.charAt(0).toUpperCase() + kw.slice(1) + ' — Complete Guide',\n    metaDescription: 'Learn everything about ' + kw + ' in this comprehensive, expert-written guide.',\n    slugUrl: kw.replace(/\\s+/g,'-'),\n    h1Tag: 'The Complete Guide to ' + kw.charAt(0).toUpperCase() + kw.slice(1),\n    excerpt: 'Discover everything you need to know about ' + kw + ' in this in-depth guide written by experts.',\n    sections: [\n      { h2: 'What Is ' + kw.charAt(0).toUpperCase() + kw.slice(1) + '?', subsections: [] },\n      { h2: 'Key Benefits of ' + kw.charAt(0).toUpperCase() + kw.slice(1), subsections: [{ h3: 'Why It Matters' }] },\n      { h2: 'How to Get Started with ' + kw.charAt(0).toUpperCase() + kw.slice(1), subsections: [{ h3: 'Step-by-Step Approach' }] },\n      { h2: 'Conclusion: ' + kw.charAt(0).toUpperCase() + kw.slice(1) + ' Final Thoughts', subsections: [] }\n    ],\n    faqQuestions: ['What is ' + kw + '?', 'How does ' + kw + ' work?', 'Why is ' + kw + ' important?'],\n    tags: [kw],\n    featuredImagePrompt: 'A business team discussing ' + kw + ' in a modern office, ' + 'clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (blue #1E88E5 and amber #F5A623 used in UI/icon accents), polished SaaS-website aesthetic, no text overlay, 16:9 landscape'.replace(/'/g, \"\"),\n    hookIntro: 'If you are searching for ' + kw + ', you already know how much is riding on getting it right.',\n    ctaText: 'Want expert help with ' + kw + '? Get in touch with our team today.',\n    inContentImagePrompts: [\n      'A close-up of hands using a laptop showing ' + kw + ' related work, ' + 'clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (blue #1E88E5 and amber #F5A623 used in UI/icon accents), polished SaaS-website aesthetic, no text overlay, 16:9 landscape'.replace(/'/g, \"\"),\n      'Two professionals reviewing options for ' + kw + ' on a tablet or whiteboard, ' + 'clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (blue #1E88E5 and amber #F5A623 used in UI/icon accents), polished SaaS-website aesthetic, no text overlay, 16:9 landscape'.replace(/'/g, \"\"),\n      'A step-by-step workflow or checklist scene related to ' + kw + ' in a bright office, ' + 'clean modern corporate photography style, bright airy white/light background, professional business people or clean tech/office visuals, accented with TechBliss brand colors (blue #1E88E5 and amber #F5A623 used in UI/icon accents), polished SaaS-website aesthetic, no text overlay, 16:9 landscape'.replace(/'/g, \"\")\n    ]\n  };\n}\nconst prev = $node['Add Money Page Links'].json;\nreturn [{ json: { ...prev, outline: parsed } }];"
+      },
+      "id": "ba6488a8-dc02-4977-a8da-e707f0193b9d",
+      "name": "Parse Outline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4736,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an expert human content writer. Write a complete blog article of approximately {{ $node['Input Validation1'].json.wordCount }} words (focused, high-quality, 1200-1500 words - tight and no padding, agency-blog style).\n\nPrimary keyword: {{ $node['Input Validation1'].json.primaryKeyword }}\nAudience: {{ $node['Input Validation1'].json.targetAudience }}\nTone: {{ $node['Input Validation1'].json.tone }}\nSemantic keyword cluster (weave these in naturally): {{ $json.outline.semanticCluster.join(', ') }}\nCompetitor gaps to cover: {{ $json.outline.competitorGaps.join(', ') }}\nHook intro to open the article with (before H1 content, as first paragraph): {{ $json.outline.hookIntro }}\nMid-article CTA (insert as its own blockquote line starting with \"CTA:\" after roughly 40% of the article): {{ $json.outline.ctaText }}\n\nOutline:\nH1: {{ $json.outline.h1Tag }}\n{{ $json.outline.sections.map((s,i) => '## ' + s.h2 + (s.includeTable ? ' [ADD A TABLE HERE]' : '') + (s.includeStatCallout ? ' [ADD A BLOCKQUOTE STAT CALLOUT HERE]' : '') + '\\n' + (s.subsections||[]).map(ss => '### ' + ss.h3).join('\\n')).join('\\n') }}\n\nFAQ questions to answer:\n{{ $json.outline.faqQuestions.join('\\n') }}\n\nINTERNAL LINKS — naturally embed 2-3 of these as real Markdown links [anchor text](url) inside relevant sentences, spread across at least 2 different sections (never clustered together, never as a bare list at the end):\n{{ ($json.internalLinkCandidates||[]).map(l => l.title + ' -> ' + l.url).join('\\n') }}\nFor anchor text, prefer using the primary keyword or one of these secondary/longtail keywords naturally where it fits the sentence (don't force it if awkward): {{ $node['Input Validation1'].json.originalFormInput.SecondaryKeywords || '' }}\n\nEXTERNAL LINKS — naturally embed 1-2 of these as real Markdown links [anchor text](url) citing sources/authority:\n{{ ($json.externalLinkCandidates||[]).map(l => l.title + ' -> ' + l.url).join('\\n') }}\n\nSTRICT MARKDOWN OUTPUT RULES (this is parsed by a Markdown-to-Gutenberg converter, follow EXACTLY):\n1. H1 line starts with \"# \" and MUST contain the primary keyword exactly\n2. First paragraph (100 words) MUST contain the primary keyword\n3. At least 2 \"## \" headings must contain the primary keyword (including the conclusion)\n4. Keyword density: 1.2%-2.0% — natural placement only, never stuffed\n5. READABILITY IS CRITICAL - target a Flesch Reading Ease score of 60+ (plain, accessible English, not academic/dense writing):\n   - Average sentence length 10-15 words. Break up any sentence over 20 words into two.\n   - Use everyday words over complex/formal ones (e.g. \"use\" not \"utilize\", \"help\" not \"facilitate\", \"show\" not \"demonstrate\")\n   - One idea per sentence. Avoid stacking multiple clauses with commas/semicolons.\n   - Write like you're explaining it to a smart friend, not writing an academic paper\n   - Vary sentence length for rhythm, but keep the AVERAGE short\n6. Include 2-3 concrete real-world examples or analogies. Also weave in 1-2 authority/expertise signals naturally (E-E-A-T) - e.g. reference TechBliss's direct experience as a certified Google Workspace/Microsoft 365 partner, mention having helped real businesses (use realistic but non-specific framing like \"we've guided dozens of SMBs through this exact decision\" rather than inventing fake named companies or fake statistics). Write with the confident, first-hand voice of a practitioner who does this work daily, not a generic content writer.\n7. Wherever a section is marked [ADD A TABLE HERE], insert a real HTML table directly under that heading using this exact structure (plain HTML, NOT markdown pipes):\n   <table><thead><tr><th>Column A</th><th>Column B</th><th>Column C</th></tr></thead><tbody><tr><td>value 1</td><td>value 2</td><td>value 3</td></tr><tr><td>value 4</td><td>value 5</td><td>value 6</td></tr></tbody></table>\n   Use 3-5 data rows relevant to that section. Never use markdown pipe syntax (|) for tables — always plain HTML <table> tags.\n8. Wherever a section is marked [ADD A BLOCKQUOTE STAT CALLOUT HERE], insert a line starting with \"> \" containing a bolded statistic or key insight\n9. Insert exactly 3 image placeholder lines at natural breaks between major sections (their own line, nothing else on the line): {{IMAGE_1}} then later {{IMAGE_2}} then later {{IMAGE_3}}\n10. Insert the mid-article CTA as its own line: \"> CTA: <the cta text>\" after roughly 40% of the content\n10b. In at least 2 different sections (not the same section as the CTA), add a short \"Pro Tip\" or \"Key Insight\" callout as its own line: \"> TIP: <a genuinely useful, specific tip or insight related to that section — not generic filler>\" — these render as amber-highlighted boxes and give the article visual rhythm, so spread them naturally through the middle sections\n11. Add a \"## Frequently Asked Questions\" section with each question as \"### \" and the answer as a normal paragraph directly below it, covering ALL FAQ questions above. CRITICAL PLACEMENT: this FAQ section MUST appear immediately BEFORE the \"## Conclusion\" section — never after it. Order must be: [all body sections] -> FAQ -> Conclusion. Each FAQ answer should be a genuinely useful, specific 3-4 sentence paragraph (not a one-liner) — add real detail, examples, or numbers where relevant, not generic filler.\n12. Use \"- \" bullet lists for scannable points (bold lead-in phrase via **text** + explanation), agency-blog style\n13. End with a natural closing CTA paragraph inviting comments or next steps\n14. BANNED phrases/style: 'delve into', 'in today's digital landscape', 'leverage', 'robust', 'it's worth noting', 'game-changer', 'unlock the power of'. Also avoid overly literary/flowery vocabulary (e.g. 'orchestrated', 'sprinkle', 'shepherd', 'tack on', 'crossroads', 'grasping the subtleties') — this isn't creative writing, it's a helpful business guide. Plain, direct, confident language only.\n15. Return ONLY the markdown article — no code fences, no commentary, no HTML tags",
+        "options": {
+          "systemMessage": "You are an expert human content writer with 20+ years of experience writing EEAT-quality SEO content. Follow all rules precisely. Return ONLY Markdown starting with the H1."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -4512,
+        -272
+      ],
+      "id": "2db226ee-630f-4c82-8e12-f1968e658156",
+      "name": "Draft Article Agent"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -4432,
+        -48
+      ],
+      "id": "ddf91c2d-e034-4c3a-9d92-e5214689ca3a",
+      "name": "Groq (Draft) [1]",
+      "credentials": {
+        "groqApi": {
+          "id": "CfJpc3GUvqNjdHJ4",
+          "name": "Groq account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output || $input.first().json.response || '';\nconst prev = $node['Parse Outline'].json;\nreturn [{ json: { ...prev, articleDraft: raw } }];"
+      },
+      "id": "dc9d3bf3-c2ac-4a55-b2a8-f43a5abd17d2",
+      "name": "Store Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -4160,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a rigorous fact-checker and editor. Review the article below for factual accuracy.\n\nArticle:\n{{ $json.articleDraft }}\n\nPrimary topic: {{ $node['Input Validation1'].json.primaryKeyword }}\n\nTask:\n1. Identify any specific statistics, dates, named studies, or claims that seem uncertain or hallucinated\n2. For each suspicious claim, replace with hedged phrasing (e.g. 'research suggests...' or 'according to industry reports...') or remove the specific number and keep the concept\n3. Do NOT add new false claims\n4. Preserve all keyword placements, headings, bullet lists, bold text, structure, and Markdown formatting\n5. Keep the same article length and tone\n6. Do NOT change any Markdown formatting symbols\n\nReturn the corrected article in Markdown only. No preamble, no list of changes.\n\nCRITICAL - DO NOT REMOVE: Any line that is EXACTLY `{{IMAGE_1}}`, `{{IMAGE_2}}`, or `{{IMAGE_3}}` (on its own line) is a required image placeholder. Keep every one of these lines, in their original relative position in the article, character-for-character. Never delete, rename, merge, or paraphrase them. Same rule for any line starting with `> CTA:` or `> TIP:`. Also preserve the section ORDER exactly as given — the FAQ section must stay immediately before the Conclusion section, never move it after. Also preserve any `<table>...</table>` HTML block exactly as-is — never convert it to markdown pipes, never reformat, never split or merge its rows.",
+        "options": {
+          "systemMessage": "You are a professional fact-checker. Preserve all Markdown formatting exactly. Return ONLY the corrected Markdown article."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -3936,
+        -272
+      ],
+      "id": "a806e964-ed6f-468b-890b-6087cded0b58",
+      "name": "Fact-Check Agent"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -3856,
+        -48
+      ],
+      "id": "cd24ecdf-2eef-4651-9ff0-65ee355433f5",
+      "name": "Groq (Fact-Check) [1]",
+      "credentials": {
+        "groqApi": {
+          "id": "CfJpc3GUvqNjdHJ4",
+          "name": "Groq account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output || $input.first().json.response || '';\nconst prev = $node['Store Draft'].json;\nconst original = prev.articleDraft || '';\n// Guard: if the rewrite is suspiciously short (likely truncated mid-generation), keep the original instead\nconst isSuspiciouslyShort = raw && original && raw.trim().length < original.trim().length * 0.7;\nconst finalText = (raw && !isSuspiciouslyShort) ? raw : original;\nreturn [{ json: { ...prev, articleFactChecked: finalText, factCheckTruncated: isSuspiciouslyShort } }];"
+      },
+      "id": "84fffcc6-963b-4262-8929-e61c18582bc7",
+      "name": "Store Fact-Checked Article",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3584,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Optimise the following article for on-page SEO.\n\nArticle:\n{{ $json.articleFactChecked }}\n\nPrimary keyword: {{ $node['Input Validation1'].json.primaryKeyword }}\nSemantic cluster: {{ $json.outline.semanticCluster.join(', ') }}\n\nInternal Link Candidates (existing pages on this site — use ONLY these URLs for internal links):\n{{ $json.internalLinkCandidates && $json.internalLinkCandidates.length ? $json.internalLinkCandidates.map(c => '- [' + c.title + '](' + c.url + ')').join('\\n') : 'None available — do not add any internal links.' }}\n\nExternal Reference Candidates (authoritative sources — use ONLY these URLs for external links):\n{{ $json.externalLinkCandidates && $json.externalLinkCandidates.length ? $json.externalLinkCandidates.map(c => '- [' + c.title + '](' + c.url + ') (' + c.domain + ')').join('\\n') : 'None available — do not add any external links.' }}\n\nSEO requirements:\n1. Verify primary keyword appears in H1 — rewrite H1 if missing\n2. Verify primary keyword appears in the first 100 words — add naturally if missing\n3. Verify primary keyword appears in at least one H2 — update an H2 if missing\n4. Verify the conclusion H2 contains the primary keyword\n5. Weave semantic cluster terms in naturally (do not keyword-stuff)\n6. Keyword density: keep at 1.2%–2.0%\n7. Insert 2-3 internal links using standard Markdown link syntax [anchor text](url), choosing anchor text that fits naturally into existing sentences. Use ONLY URLs from the Internal Link Candidates list above — never invent a URL. If the list is empty, skip this step entirely.\n8. Insert 1-2 external links to authoritative sources using standard Markdown link syntax [anchor text](url). Use ONLY URLs from the External Reference Candidates list above — never invent a URL. If the list is empty, skip this step entirely.\n9. Do not link the same URL more than once, and never link the primary keyword itself as anchor text more than once\n10. Preserve ALL Markdown formatting: headings, bullet lists (- item), bold (**text**), numbered lists, FAQ section, CTA\n11. Keep paragraphs short (3-4 sentences max)\n\nReturn ONLY the SEO-optimised article in Markdown. No preamble.\n\nCRITICAL - DO NOT REMOVE: Any line that is EXACTLY `{{IMAGE_1}}`, `{{IMAGE_2}}`, or `{{IMAGE_3}}` (on its own line) is a required image placeholder. Keep every one of these lines, in their original relative position in the article, character-for-character. Never delete, rename, merge, or paraphrase them. Same rule for any line starting with `> CTA:` or `> TIP:`. Also preserve the section ORDER exactly as given — the FAQ section must stay immediately before the Conclusion section, never move it after. Also preserve any `<table>...</table>` HTML block exactly as-is — never convert it to markdown pipes, never reformat, never split or merge its rows.",
+        "options": {
+          "systemMessage": "You are an on-page SEO specialist. Optimise without over-optimising. Only use the exact URLs supplied to you for links — never fabricate a URL. Preserve all Markdown formatting exactly. Return ONLY Markdown."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -3360,
+        -272
+      ],
+      "id": "fde0dc3c-d3c6-489b-8fe8-b130ecbc9d3b",
+      "name": "SEO Optimisation Agent"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -3280,
+        -48
+      ],
+      "id": "b5e933eb-0e43-44d6-92ce-36b9ba49a3e3",
+      "name": "Groq (SEO Pass) [2]",
+      "credentials": {
+        "groqApi": {
+          "id": "oDKXjjGQL66C2OEO",
+          "name": "Groq account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.output || $input.first().json.response || '';\nconst prev = $node['Store Fact-Checked Article'].json;\nconst original = prev.articleFactChecked || '';\nconst isSuspiciouslyShort = raw && original && raw.trim().length < original.trim().length * 0.7;\nconst finalText = (raw && !isSuspiciouslyShort) ? raw : original;\nreturn [{ json: { ...prev, articleSEO: finalText, seoPassTruncated: isSuspiciouslyShort } }];"
+      },
+      "id": "1e9d2d5c-b27c-4a5a-b7e6-4ab64779983a",
+      "name": "Store SEO Article1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3008,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst article = data.articleSEO || '';\nconst corpus = (data.serpData && data.serpData.competitorCorpus) ? data.serpData.competitorCorpus : '';\n\nif (!article || article.trim() === '') {\n  return [{ json: { ...data, uniquenessScore: 0, uniquenessError: 'No article content' } }];\n}\n\nfunction termFreq(text) {\n  const words = text.toLowerCase().replace(/[^a-z0-9\\s]/g,' ').split(/\\s+/).filter(w => w.length > 3);\n  const freq = {};\n  words.forEach(w => { freq[w] = (freq[w]||0) + 1; });\n  return freq;\n}\n\nconst articleTF = termFreq(article);\nconst corpusTF = termFreq(corpus);\n\nfunction cosineSim(a, b) {\n  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);\n  let dot = 0, magA = 0, magB = 0;\n  keys.forEach(k => {\n    const va = a[k]||0, vb = b[k]||0;\n    dot += va*vb; magA += va*va; magB += vb*vb;\n  });\n  if (magA === 0 || magB === 0) return 0;\n  return dot / (Math.sqrt(magA)*Math.sqrt(magB));\n}\n\nconst similarity = corpus ? cosineSim(articleTF, corpusTF) : 0;\nconst uniquenessScore = Math.round(Math.max(0, Math.min(100, (1 - similarity) * 100)));\n\nreturn [{ json: { ...data, uniquenessScore, competitorSimilarity: parseFloat(similarity.toFixed(3)) } }];"
+      },
+      "id": "6f939ad3-53e9-4bc8-a430-80c25565e4f5",
+      "name": "Semantic Uniqueness Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2784,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.uniquenessScore }}",
+              "operation": "larger",
+              "value2": 65
+            }
+          ]
+        }
+      },
+      "id": "37d0427e-7e23-4013-8600-28708f6608ff",
+      "name": "Uniqueness Gate1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -2560,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Deep-rewrite the following article to make it completely original. The uniqueness score was below 65 — too similar to competitors.\n\nPrimary keyword: {{ $node['Input Validation1'].json.primaryKeyword }}\n\nArticle to rewrite:\n{{ $json.articleSEO }}\n\nRules:\n1. Fully restructure sentences — no phrase should match the original\n2. Add unique metaphors, concrete examples, and personal insights not found in competitors\n3. PRESERVE all keyword occurrences and density (1.2%–2.0%)\n4. PRESERVE the H1 with keyword, all H2s (including conclusion H2 with keyword)\n5. PRESERVE all Markdown: bullet lists (- item), bold (**text**), numbered lists, FAQ section, CTA\n6. PRESERVE every existing Markdown link exactly as-is — [anchor text](url) pairs must not be removed, and the URLs must not change. You may move a link's surrounding sentence but never delete or alter the link itself\n7. Make content more personal, opinionated, and distinctive\n8. Keep paragraphs short (3-4 sentences max)\n\nReturn ONLY the rewritten article in Markdown. No preamble.\n\nCRITICAL - DO NOT REMOVE: Any line that is EXACTLY `{{IMAGE_1}}`, `{{IMAGE_2}}`, or `{{IMAGE_3}}` (on its own line) is a required image placeholder. Keep every one of these lines, in their original relative position in the article, character-for-character. Never delete, rename, merge, or paraphrase them. Same rule for any line starting with `> CTA:` or `> TIP:`. Also preserve the section ORDER exactly as given — the FAQ section must stay immediately before the Conclusion section, never move it after. Also preserve any `<table>...</table>` HTML block exactly as-is — never convert it to markdown pipes, never reformat, never split or merge its rows.",
+        "options": {
+          "systemMessage": "You are an expert content writer. Rewrite for originality, preserve all SEO structure, existing Markdown links, and formatting. Return ONLY Markdown."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -2336,
+        -144
+      ],
+      "id": "c153e700-7900-4770-8cb3-1c67368593bd",
+      "name": "Uniqueness Rewrite Agent"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -2256,
+        96
+      ],
+      "id": "1d582713-346c-4af2-b708-c38e6ba5bfc1",
+      "name": "Groq (Uniqueness Rewrite) [2]",
+      "credentials": {
+        "groqApi": {
+          "id": "oDKXjjGQL66C2OEO",
+          "name": "Groq account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst rewrite = data.output || data.response || data.text || '';\nconst base = data.serpData ? data : $node['Semantic Uniqueness Scoring'].json;\nconst original = base.articleSEO || '';\nconst isSuspiciouslyShort = rewrite && original && rewrite.trim().length < original.trim().length * 0.7;\nconst finalArticle = (rewrite && rewrite.trim().length > 200 && !isSuspiciouslyShort) ? rewrite : original;\nreturn [{ json: { ...base, articleFinal: finalArticle, rewriteApplied: !!(rewrite && rewrite.trim().length > 200 && !isSuspiciouslyShort), uniquenessRewriteTruncated: isSuspiciouslyShort } }];"
+      },
+      "id": "c2a3d0c8-8374-40bb-b27c-251bbb4d0944",
+      "name": "Store Final Article1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1984,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst article = data.articleFinal || '';\nif (!article.trim()) {\n  return [{ json: { ...data, qcReport: { passedQC: false, error: 'No article content' } } }];\n}\n\nconst kw = (data.primaryKeyword || '').toLowerCase().trim();\nconst semanticCluster = (data.outline && data.outline.semanticCluster) || [];\nconst siteDomain = data.siteDomain || '';\n\nconst words = article.split(/\\s+/).filter(w => w.length > 0).length;\nconst articleLower = article.toLowerCase();\nlet kwOccurrences = 0;\nlet pos = 0;\nwhile ((pos = articleLower.indexOf(kw, pos)) !== -1) { kwOccurrences++; pos += kw.length; }\nconst kwDensity = words > 0 ? parseFloat(((kwOccurrences / words) * 100).toFixed(2)) : 0;\n\nconst clusterCoverage = semanticCluster.length > 0\n  ? semanticCluster.filter(t => articleLower.includes(t.toLowerCase())).length / semanticCluster.length\n  : 1;\n\nconst h1Match = article.match(/^#\\s+.+/m);\nconst hasKwInH1 = h1Match ? h1Match[0].toLowerCase().includes(kw) : false;\nconst h2Lines = [...article.matchAll(/^##\\s+.+/gm)].map(m => m[0].toLowerCase());\nconst hasKwInH2 = h2Lines.some(l => l.includes(kw));\nconst conclusionMatch = article.match(/##[^#\\n]*conclusion[\\s\\S]*$/im);\nconst hasKwInConclusion = conclusionMatch ? conclusionMatch[0].toLowerCase().includes(kw) : articleLower.slice(Math.floor(articleLower.length * 0.8)).includes(kw);\n\nconst sentences = article.split(/[.!?]+/).filter(s => s.trim().length > 5);\nconst avgWords = words / Math.max(1, sentences.length);\nconst syllables = (article.match(/[aeiouy]/gi) || []).length;\nconst avgSyll = syllables / Math.max(1, words);\nconst flesch = Math.max(0, Math.min(100, Math.round(206.835 - 1.015 * avgWords - 84.6 * avgSyll)));\n\n// ── Link checks ──────────────────────────────────────────────\nconst mdLinks = [...article.matchAll(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g)].map(m => ({ anchor: m[1], url: m[2] }));\nfunction hostnameOf(url) { try { return new URL(url).hostname.replace(/^www\\./, ''); } catch (e) { return ''; } }\nconst internalLinks = siteDomain ? mdLinks.filter(l => hostnameOf(l.url) === siteDomain) : [];\nconst externalLinks = siteDomain ? mdLinks.filter(l => hostnameOf(l.url) && hostnameOf(l.url) !== siteDomain) : mdLinks;\nconst hasInternalLink = internalLinks.length > 0 || (data.internalLinkCandidates || []).length === 0;\nconst hasExternalLink = externalLinks.length > 0 || (data.externalLinkCandidates || []).length === 0;\n\nconst seoScore = (hasKwInH1 ? 25 : 0) + (hasKwInH2 ? 25 : 0) + (hasKwInConclusion ? 25 : 0) +\n  (kwDensity >= 1.0 && kwDensity <= 2.2 ? 25 : kwDensity >= 0.7 ? 12 : 0);\n\nconst semanticBonus = Math.round(clusterCoverage * 20);\nconst readabilityBonus = flesch >= 50 ? 10 : 0;\nconst hasCTA = /^>\\s*CTA:/im.test(article);\nconst hasFAQ = /\\b(faq|frequently asked|people also ask)\\b/i.test(article);\nconst overallScore = Math.min(100, Math.round(seoScore * 0.6 + semanticBonus * 0.2 + readabilityBonus * 0.1 + (hasCTA ? 5 : 0) + (hasFAQ ? 5 : 0)));\nconst passedQC = seoScore >= 75 && kwDensity >= 1.0 && kwDensity <= 2.2 && hasKwInH1 && hasInternalLink && hasExternalLink;\n\nreturn [{ json: { ...data, qcReport: {\n  wordCount: words, keywordDensity: kwDensity, keywordOccurrences: kwOccurrences,\n  readabilityScore: flesch, seoScore, semanticClusterCoverage: parseFloat(clusterCoverage.toFixed(2)),\n  semanticBonus, overallScore, hasCTA, hasFAQ,\n  keywordPlacement: { inH1: hasKwInH1, inH2: hasKwInH2, inConclusion: hasKwInConclusion },\n  internalLinkCount: internalLinks.length, externalLinkCount: externalLinks.length,\n  hasInternalLink, hasExternalLink,\n  passedQC\n}}}];"
+      },
+      "id": "63a420ac-e25e-4043-bd5e-7cbf6556bbec",
+      "name": "Quality Validation1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1760,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.qcReport.passedQC }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "f18f50e8-1321-455c-b50f-af7d443b0375",
+      "name": "QC Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -1536,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Fix the article below to PASS all QC checks.\n\nQC Report:\n{{ JSON.stringify($json.qcReport) }}\n\nPrimary keyword: {{ $node['Input Validation1'].json.primaryKeyword }}\nSemantic cluster: {{ $json.outline.semanticCluster.join(', ') }}\n\nInternal Link Candidates (use ONLY these URLs if internal links are missing):\n{{ $json.internalLinkCandidates && $json.internalLinkCandidates.length ? $json.internalLinkCandidates.map(c => '- [' + c.title + '](' + c.url + ')').join('\\n') : 'None available.' }}\n\nExternal Reference Candidates (use ONLY these URLs if external links are missing):\n{{ $json.externalLinkCandidates && $json.externalLinkCandidates.length ? $json.externalLinkCandidates.map(c => '- [' + c.title + '](' + c.url + ')').join('\\n') : 'None available.' }}\n\nArticle:\n{{ $json.articleFinal }}\n\nFix ALL issues:\n1. H1 must contain the primary keyword\n2. At least one H2 must contain the primary keyword\n3. Conclusion H2 must contain the primary keyword\n4. Keyword density must be 1.0%–2.2%\n5. Weave in any missing semantic cluster terms naturally\n6. If qcReport.hasInternalLink is false, add 1-2 internal Markdown links [anchor](url) using ONLY the Internal Link Candidates above\n7. If qcReport.hasExternalLink is false, add 1 external Markdown link [anchor](url) using ONLY the External Reference Candidates above\n8. Never invent a URL that isn't in the candidate lists above\n9. Add a CTA at the end if missing\n10. Readability: if qcReport.readabilityScore is below 60, actively rewrite for plainer, shorter sentences (10-15 words average) and simpler everyday words - break up every sentence over 20 words, cut unnecessary clauses, replace formal/literary words with plain ones\n11. Keep all Markdown formatting intact: bullet lists, bold, headings, FAQ section, and any existing links\n\nReturn ONLY the corrected article in Markdown. No preamble.\n\nCRITICAL - DO NOT REMOVE: Any line that is EXACTLY `{{IMAGE_1}}`, `{{IMAGE_2}}`, or `{{IMAGE_3}}` (on its own line) is a required image placeholder. Keep every one of these lines, in their original relative position in the article, character-for-character. Never delete, rename, merge, or paraphrase them. Same rule for any line starting with `> CTA:` or `> TIP:`. Also preserve the section ORDER exactly as given — the FAQ section must stay immediately before the Conclusion section, never move it after. Also preserve any `<table>...</table>` HTML block exactly as-is — never convert it to markdown pipes, never reformat, never split or merge its rows.",
+        "options": {
+          "systemMessage": "You are a QC specialist editor. Fix issues while preserving all Markdown formatting and existing links exactly. Only use supplied URLs for any new link. Return ONLY corrected Markdown."
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -1312,
+        -144
+      ],
+      "id": "d74517ad-e9a5-4842-a319-fbcefe6fb1c9",
+      "name": "QC Fix Agent1"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {
+          "maxTokensToSample": 3000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1232,
+        96
+      ],
+      "id": "b4bf5549-a47a-4ff5-a47d-13be03474e99",
+      "name": "Groq (QC Fix) [2]",
+      "credentials": {
+        "groqApi": {
+          "id": "oDKXjjGQL66C2OEO",
+          "name": "Groq account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const fixed = $input.first().json.output || $input.first().json.response || '';\nconst prev = $node['Quality Validation1'].json;\nconst original = prev.articleFinal || '';\nconst isSuspiciouslyShort = fixed && original && fixed.trim().length < original.trim().length * 0.7;\nconst finalText = (fixed && !isSuspiciouslyShort) ? fixed : original;\nreturn [{ json: { ...prev, articleFinal: finalText, qcFixApplied: !isSuspiciouslyShort, qcFixTruncated: isSuspiciouslyShort } }];"
+      },
+      "id": "4921da87-0a91-4f55-903c-5f2ebfe3d3e4",
+      "name": "Store QC Fixed1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst article = data.articleFinal || '';\nif (!article.trim()) return [{ json: { ...data, qcReport: { passedQC: false, error: 'No article after fix' } } }];\n\nconst kw = (data.primaryKeyword || '').toLowerCase().trim();\nconst siteDomain = data.siteDomain || '';\nconst words = article.split(/\\s+/).filter(w => w.length > 0).length;\nconst articleLower = article.toLowerCase();\nlet kwOcc = 0, pos = 0;\nwhile ((pos = articleLower.indexOf(kw, pos)) !== -1) { kwOcc++; pos += kw.length; }\nconst kwDensity = words > 0 ? parseFloat(((kwOcc/words)*100).toFixed(2)) : 0;\nconst h1Match = article.match(/^#\\s+.+/m);\nconst hasKwInH1 = h1Match ? h1Match[0].toLowerCase().includes(kw) : false;\nconst h2Lines = [...article.matchAll(/^##\\s+.+/gm)].map(m => m[0].toLowerCase());\nconst hasKwInH2 = h2Lines.some(l => l.includes(kw));\nconst conclusionMatch = article.match(/##[^#\\n]*conclusion[\\s\\S]*$/im);\nconst hasKwInConclusion = conclusionMatch ? conclusionMatch[0].toLowerCase().includes(kw) : articleLower.slice(Math.floor(articleLower.length*0.8)).includes(kw);\n\nconst mdLinks = [...article.matchAll(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g)].map(m => ({ anchor: m[1], url: m[2] }));\nfunction hostnameOf(url) { try { return new URL(url).hostname.replace(/^www\\./, ''); } catch (e) { return ''; } }\nconst internalLinks = siteDomain ? mdLinks.filter(l => hostnameOf(l.url) === siteDomain) : [];\nconst externalLinks = siteDomain ? mdLinks.filter(l => hostnameOf(l.url) && hostnameOf(l.url) !== siteDomain) : mdLinks;\nconst hasInternalLink = internalLinks.length > 0 || (data.internalLinkCandidates || []).length === 0;\nconst hasExternalLink = externalLinks.length > 0 || (data.externalLinkCandidates || []).length === 0;\n\nconst seoScore = (hasKwInH1?25:0)+(hasKwInH2?25:0)+(hasKwInConclusion?25:0)+(kwDensity>=1&&kwDensity<=2.2?25:kwDensity>=0.7?12:0);\nconst hasCTA = /^>\\s*CTA:/im.test(article);\nconst hasFAQ = /\\b(faq|frequently asked|people also ask)\\b/i.test(article);\nconst passedQC = seoScore >= 75 && kwDensity >= 1.0 && kwDensity <= 2.2 && hasKwInH1 && hasInternalLink && hasExternalLink;\nreturn [{ json: { ...data, qcReport: { wordCount:words, keywordDensity:kwDensity, keywordOccurrences:kwOcc, seoScore, hasCTA, hasFAQ, internalLinkCount: internalLinks.length, externalLinkCount: externalLinks.length, hasInternalLink, hasExternalLink, keywordPlacement:{inH1:hasKwInH1,inH2:hasKwInH2,inConclusion:hasKwInConclusion}, passedQC } } }];"
+      },
+      "id": "f047b345-a8f6-4579-9326-a858a9eedf96",
+      "name": "QC Re-Validation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -736,
+        -144
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5c3a92e8-f8c6-4ae5-b129-70e8404e529a",
+      "name": "Merge After QC",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -512,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// PREPARE WORDPRESS POST\n// Converts Markdown -> Gutenberg HTML blocks\n// Resolves standard Markdown links [text](url) into real <a> tags\n// (both internal links to existing site posts and external\n// authority links resolved earlier in the workflow)\n// Injects Yoast SEO meta fields, tags, excerpt, slug\n// ============================================================\nconst data = $input.first().json;\n// Strip any leftover instruction-marker text the AI failed to remove after inserting the\n// actual content (e.g. \"[ADD A TABLE HERE]\" is a placeholder telling the AI where to put a\n// table - it should be replaced entirely, but sometimes gets left behind as literal visible text).\nconst rawMarkdown = data.articleFinal || '';\nconst markdown = rawMarkdown\n  .replace(/\\[ADD A TABLE HERE\\]/gi, '')\n  .replace(/\\[ADD A BLOCKQUOTE STAT CALLOUT HERE\\]/gi, '')\n  .replace(/\\[ADD A MARKDOWN TABLE HERE\\]/gi, '')\n  .replace(/[ \\t]+\\n/g, '\\n'); // clean up any trailing whitespace left behind on those lines\nconst kw = data.primaryKeyword || 'blog';\nconst outline = data.outline || {};\nconst qcReport = data.qcReport || {};\n\n// ── 1. MARKDOWN -> GUTENBERG HTML ─────────────────────────────\n// ── TABLE OF CONTENTS PRE-SCAN ──────────────────────────────────\n// Scans the raw markdown once for every H2/H3 heading, assigning each a unique slug.\n// This same ordered list is consumed (in order) during the actual heading rendering below,\n// so the TOC links and the real heading IDs always match exactly.\nfunction buildHeadingList(md) {\n  const usedSlugs = new Set();\n  const list = [];\n  md.split('\\n').forEach(line => {\n    const h2 = line.match(/^##\\s+(.+)$/);\n    const h3 = line.match(/^###\\s+(.+)$/);\n    if (h2 && !line.startsWith('###')) {\n      const text = h2[1].trim();\n      let base = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');\n      let slug = base, n = 2;\n      while (usedSlugs.has(slug)) { slug = `${base}-${n}`; n++; }\n      usedSlugs.add(slug);\n      list.push({ level: 2, text, slug });\n    } else if (h3 && !line.startsWith('####')) {\n      const text = h3[1].trim();\n      let base = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');\n      let slug = base, n = 2;\n      while (usedSlugs.has(slug)) { slug = `${base}-${n}`; n++; }\n      usedSlugs.add(slug);\n      list.push({ level: 3, text, slug });\n    }\n  });\n  return list;\n}\n\nfunction buildTocHtml(headingList) {\n  if (!headingList.length) return '';\n  // Show all H2s flat, but only show H3s if they fall inside the FAQ section\n  // (matches the reference design - regular body subsections don't clutter the TOC).\n  let insideFaq = false;\n  const tocEntries = headingList.filter(h => {\n    if (h.level === 2) {\n      insideFaq = /frequently asked questions|^faq/i.test(h.text);\n      return true;\n    }\n    return insideFaq; // H3s only kept while inside the FAQ section\n  });\n\n  // Build as plain nested <ul><li> HTML - FAQ sub-questions nest inside their parent <li>\n  // so it reads as one continuous native WordPress list, not two separate lists.\n  let listItems = '';\n  let i = 0;\n  while (i < tocEntries.length) {\n    const h = tocEntries[i];\n    if (h.level === 2) {\n      const isFaqHeading = /frequently asked questions|^faq/i.test(h.text);\n      let nested = '';\n      if (isFaqHeading) {\n        let j = i + 1;\n        const subItems = [];\n        while (j < tocEntries.length && tocEntries[j].level === 3) {\n          subItems.push(`<li><a href=\"#${tocEntries[j].slug}\">${tocEntries[j].text}</a></li>`);\n          j++;\n        }\n        if (subItems.length) nested = `<ul>${subItems.join('')}</ul>`;\n        i = j;\n      } else {\n        i++;\n      }\n      listItems += `<li><a href=\"#${h.slug}\">${h.text}</a>${nested}</li>`;\n    } else {\n      i++;\n    }\n  }\n  listItems += '<li><a href=\"#get-a-free-quote\">Get a Free Quote</a></li>';\n\n  // Native WordPress \"Details\" block (wp:details, WP 6.4+) - real collapsible <details>/<summary>\n  // HTML, expands/collapses natively in every browser with no custom JS needed.\n  return `<!-- wp:details {\"summary\":\"Table of Contents\"} -->\n<details class=\"wp-block-details\"><summary>Table of Contents</summary>\n<!-- wp:list -->\n<ul class=\"wp-block-list\">${listItems}</ul>\n<!-- /wp:list -->\n</details>\n<!-- /wp:details -->`;\n}\n\nfunction markdownToGutenberg(md) {\n  const headingQueue = buildHeadingList(md).slice(); // consumed in order as headings are rendered below\n  // Safety net: pull ANY <table>...</table> block out wherever it appears (even mid-sentence,\n  // even inline with intro text) and force it onto its own isolated lines, so the line-by-line\n  // parser below always catches it as a real table instead of it falling through to escaped text.\n  md = md.replace(/<table[\\s\\S]*?<\\/table>/gi, (tableHtml) => `\\n\\n${tableHtml}\\n\\n`);\n\n  // Safety net: if the AI squished a whole table onto one line (e.g. \"| A | B | |—|—| | 1 | 2 |\"),\n  // split it back into separate rows so it never renders as raw garbled pipe text.\n  md = md.replace(/(\\|[^\\n]*\\|)/g, (block) => {\n    const pipeCount = (block.match(/\\|/g) || []).length;\n    if (pipeCount <= 6) return block; // looks like one normal row already, leave it alone\n    // Break the line wherever a \"|\" closes one cell and immediately opens the next row\n    // (heuristic: insert a newline before every \"|\" that follows a \"|\" + optional space + a capitalized word/number,\n    // once we've already seen a separator-style segment like |---| or |—|)\n    if (!/\\|\\s*[-—]+\\s*\\|/.test(block)) return block; // no separator row detected, probably not a squished table\n    return block.replace(/\\|\\s*(?=[A-Z0-9])/g, '|\\n');\n  });\n  const lines = md.split('\\n');\n  const blocks = [];\n  let i = 0;\n\n  while (i < lines.length) {\n    const loopStartI = i;\n    const line = lines[i];\n\n    if (line.trim() === '') { i++; continue; }\n\n    // Skip the article's own \"# H1\" line entirely - WordPress's post title (set via the\n    // \"title\" field below, using seoTitle) is already rendered as the page's single real <h1>\n    // by the theme. Rendering a second <h1> here duplicated it visually and hurt on-page SEO\n    // (duplicate H1 tags). The line is still present in the underlying markdown for QC checks,\n    // just not converted into a heading block in the actual post body.\n    if (/^#\\s/.test(line) && !/^##/.test(line)) {\n      i++; continue;\n    }\n\n    if (/^##\\s/.test(line) && !/^###/.test(line)) {\n      const rawText = line.replace(/^##\\s+/, '');\n      const text = inlineFormat(rawText);\n      const headingEntry = headingQueue.shift();\n      const id = headingEntry ? headingEntry.slug : '';\n      blocks.push(`<!-- wp:heading {\"level\":2} -->\\n<h2 class=\"wp-block-heading\" id=\"${id}\">${text}</h2>\\n<!-- /wp:heading -->`);\n      i++; continue;\n    }\n\n    if (/^###\\s/.test(line) && !/^####/.test(line)) {\n      const rawText = line.replace(/^###\\s+/, '');\n      const text = inlineFormat(rawText);\n      const headingEntry = headingQueue.shift();\n      const id = headingEntry ? headingEntry.slug : '';\n      blocks.push(`<!-- wp:heading {\"level\":3} -->\\n<h3 class=\"wp-block-heading\" id=\"${id}\">${text}</h3>\\n<!-- /wp:heading -->`);\n      i++; continue;\n    }\n\n    // H4/H5/H6 (4+ hashes) - the AI isn't instructed to use these, but if it ever does,\n    // render as a bold paragraph rather than falling through unhandled (which caused an\n    // infinite loop: these lines matched the paragraph-collector's exclusion pattern but\n    // had no explicit handler, so `i` never advanced and the loop spun forever).\n    if (/^#{4,6}\\s/.test(line)) {\n      const rawText = line.replace(/^#{4,6}\\s+/, '');\n      const text = inlineFormat(rawText);\n      blocks.push(`<!-- wp:paragraph -->\\n<p><strong>${text}</strong></p>\\n<!-- /wp:paragraph -->`);\n      i++; continue;\n    }\n\n    if (/^-\\s/.test(line)) {\n      const items = [];\n      while (i < lines.length && /^-\\s/.test(lines[i])) {\n        items.push(`<li>${inlineFormat(lines[i].replace(/^-\\s+/, ''))}</li>`);\n        i++;\n      }\n      blocks.push(`<!-- wp:list -->\\n<ul class=\"wp-block-list\">\\n${items.join('\\n')}\\n</ul>\\n<!-- /wp:list -->`);\n      continue;\n    }\n\n    if (/^\\d+\\.\\s/.test(line)) {\n      const items = [];\n      while (i < lines.length && /^\\d+\\.\\s/.test(lines[i])) {\n        items.push(`<li>${inlineFormat(lines[i].replace(/^\\d+\\.\\s+/, ''))}</li>`);\n        i++;\n      }\n      blocks.push(`<!-- wp:list {\"ordered\":true} -->\\n<ol class=\"wp-block-list\">\\n${items.join('\\n')}\\n</ol>\\n<!-- /wp:list -->`);\n      continue;\n    }\n\n    // CTA callout: \"> CTA: text\"\n    if (/^>\\s*CTA:\\s*/.test(line)) {\n      const text = inlineFormat(line.replace(/^>\\s*CTA:\\s*/, ''));\n      blocks.push(`<!-- wp:group {\"className\":\"cta-box\"} --><div class=\"wp-block-group cta-box\" style=\"border-left:4px solid #1E88E5;padding:16px 20px;background:#eaf4fd;margin:24px 0;border-radius:4px;\"><p style=\"margin:0;\"><strong>💡 ${text}</strong></p></div><!-- /wp:group -->`);\n      i++; continue;\n    }\n\n    // Tip/highlight callout: \"> TIP: text\" - amber, visually distinct from the blue CTA box\n    if (/^>\\s*TIP:\\s*/.test(line)) {\n      const text = inlineFormat(line.replace(/^>\\s*TIP:\\s*/, ''));\n      blocks.push(`<!-- wp:group {\"className\":\"tip-box\"} --><div class=\"wp-block-group tip-box\" style=\"border-left:4px solid #F5A623;padding:16px 20px;background:#fff8ec;margin:24px 0;border-radius:4px;\"><p style=\"margin:0;\"><strong>⭐ Pro Tip:</strong> ${text}</p></div><!-- /wp:group -->`);\n      i++; continue;\n    }\n\n    if (/^>\\s/.test(line)) {\n      // Stat/insight callout - third distinct visual style (dark card), separate from CTA (blue) and TIP (amber)\n      const text = inlineFormat(line.replace(/^>\\s+/, ''));\n      blocks.push(`<!-- wp:group {\"className\":\"stat-callout\"} --><div class=\"wp-block-group stat-callout\" style=\"background:#1a1a2e;color:#fff;padding:20px 24px;margin:24px 0;border-radius:6px;\"><p style=\"margin:0;font-size:1.1em;\">📊 ${text}</p></div><!-- /wp:group -->`);\n      i++; continue;\n    }\n\n    if (/^---+$/.test(line.trim())) {\n      blocks.push(`<!-- wp:separator -->\\n<hr class=\"wp-block-separator has-alpha-channel-opacity\"/>\\n<!-- /wp:separator -->`);\n      i++; continue;\n    }\n\n    // Real HTML <table> block (preferred format) -> pass straight through as wp:table\n    if (/^<table/i.test(line.trim())) {\n      let tableHtml = '';\n      while (i < lines.length && !/<\\/table>/i.test(lines[i])) { tableHtml += lines[i] + '\\n'; i++; }\n      if (i < lines.length) { tableHtml += lines[i]; i++; } // include the closing </table> line itself\n      blocks.push(`<!-- wp:table --><figure class=\"wp-block-table\">${tableHtml}</figure><!-- /wp:table -->`);\n      continue;\n    }\n\n    // GFM Markdown table -> wp:table block\n    if (/^\\|.+\\|\\s*$/.test(line) && i + 1 < lines.length && /^\\|[\\s:\\-|]+\\|\\s*$/.test(lines[i+1])) {\n      const headerCells = line.split('|').map(c => c.trim()).filter((c,idx,arr) => !(idx===0 && c==='') && !(idx===arr.length-1 && c===''));\n      i += 2;\n      const rows = [];\n      while (i < lines.length && /^\\|.+\\|\\s*$/.test(lines[i])) {\n        const cells = lines[i].split('|').map(c => c.trim()).filter((c,idx,arr) => !(idx===0 && c==='') && !(idx===arr.length-1 && c===''));\n        rows.push(cells);\n        i++;\n      }\n      const thead = `<thead><tr>${headerCells.map(h => `<th>${inlineFormat(h)}</th>`).join('')}</tr></thead>`;\n      const tbody = `<tbody>${rows.map(r => `<tr>${r.map(c => `<td>${inlineFormat(c)}</td>`).join('')}</tr>`).join('')}</tbody>`;\n      blocks.push(`<!-- wp:table --><figure class=\"wp-block-table\"><table>${thead}${tbody}</table></figure><!-- /wp:table -->`);\n      continue;\n    }\n\n    // In-content image placeholders {{IMAGE_1}} / {{IMAGE_2}} / {{IMAGE_3}}\n    if (/^\\{\\{IMAGE_(\\d+)\\}\\}\\s*$/.test(line.trim())) {\n      const idx = line.trim().match(/^\\{\\{IMAGE_(\\d+)\\}\\}$/)[1];\n      const imgList = data.inContentImages || [];\n      const img = imgList[parseInt(idx,10) - 1];\n      if (img && img.url) {\n        blocks.push(`<!-- wp:image {\"sizeSlug\":\"large\"} --><figure class=\"wp-block-image size-large\"><img src=\"${img.url}\" alt=\"${(img.alt||kw).replace(/\"/g,'')}\"/></figure><!-- /wp:image -->`);\n      }\n      i++; continue;\n    }\n\n    // Legacy placeholder support (in case an agent still emits the old format)\n    if (/^\\[Internal Link:/.test(line) || /^\\[External Link:/.test(line)) {\n      const text = inlineFormat(line);\n      blocks.push(`<!-- wp:paragraph -->\\n<p>${text}</p>\\n<!-- /wp:paragraph -->`);\n      i++; continue;\n    }\n\n    const paraLines = [];\n    while (\n      i < lines.length &&\n      lines[i].trim() !== '' &&\n      !/^#{1,6}\\s/.test(lines[i]) &&\n      !/^-\\s/.test(lines[i]) &&\n      !/^\\d+\\.\\s/.test(lines[i]) &&\n      !/^>\\s/.test(lines[i]) &&\n      !/^---+$/.test(lines[i].trim())\n    ) {\n      paraLines.push(lines[i]);\n      i++;\n    }\n    if (paraLines.length > 0) {\n      const text = inlineFormat(paraLines.join(' '));\n      blocks.push(`<!-- wp:paragraph -->\\n<p>${text}</p>\\n<!-- /wp:paragraph -->`);\n    }\n\n    // HARD SAFETY NET: if nothing above advanced `i` for this line (an unhandled edge case\n    // we haven't anticipated), force it forward as a last resort so the loop can NEVER hang\n    // indefinitely. Better to skip one weird line than freeze the whole workflow.\n    if (i === loopStartI) { i++; }\n  }\n\n  // Insert the Table of Contents right at the top of the body (after any intro paragraph\n  // that came before the first heading, so it doesn't awkwardly sit above the hook).\n  const tocHtml = buildTocHtml(buildHeadingList(md));\n  if (tocHtml) {\n    const firstHeadingBlockIndex = blocks.findIndex(b => b.includes('wp:heading'));\n    if (firstHeadingBlockIndex > 0) {\n      blocks.splice(firstHeadingBlockIndex, 0, tocHtml);\n    } else {\n      blocks.unshift(tocHtml);\n    }\n  }\n\n  return blocks.join('\\n\\n');\n}\n\n// Inline formatting (real markdown links, bold, italic, code, legacy placeholders)\nfunction inlineFormat(text) {\n  // Escape HTML entities first (avoid double-encoding)\n  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n\n  // Real Markdown links [anchor text](https://url) -> resolved <a> tags.\n  // Internal vs external is decided purely by comparing the link's domain\n  // to the site's own domain (siteDomain), so no manual tagging is needed.\n  text = text.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, (m, anchor, url) => {\n    let hostname = '';\n    try { hostname = new URL(url).hostname.replace(/^www\\./, ''); } catch (e) {}\n    const isInternal = data.siteDomain && hostname === data.siteDomain;\n    const relAttr = isInternal ? '' : ' target=\"_blank\" rel=\"noopener noreferrer nofollow\"';\n    return `<a href=\"${url}\"${relAttr}>${anchor}</a>`;\n  });\n\n  // Bold **text**\n  text = text.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');\n  // Italic *text* (not already inside <strong>)\n  text = text.replace(/(?<!\\*)\\*(?!\\*)(.+?)(?<!\\*)\\*(?!\\*)/g, '<em>$1</em>');\n  // Inline code `text`\n  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');\n\n  // Legacy placeholder fallback (only triggers if the agent didn't resolve to real Markdown links)\n  text = text.replace(/\\[Internal Link:\\s*([^\\]]+)\\]/g, '<a href=\"#\">$1</a>');\n  text = text.replace(/\\[External Link:\\s*(https?:\\/\\/[^\\s\\-\\]]+)[\\s\\-\\u2014][^\\]]*\\]/g, '<a href=\"$1\" target=\"_blank\" rel=\"noopener noreferrer nofollow\">$1</a>');\n\n  return text;\n}\n\nconst gutenbergContent = markdownToGutenberg(markdown);\n\n// ── 3. SEO FIELDS ─────────────────────────────────────────────\n// Truncate cleanly at a word boundary (never mid-word), and only add \"...\" if we actually cut something.\nfunction truncateClean(text, maxLen) {\n  if (!text || text.length <= maxLen) return text;\n  const cut = text.slice(0, maxLen);\n  const lastSpace = cut.lastIndexOf(' ');\n  const clean = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;\n  return clean.replace(/[,;:\\-–—]+$/, '').trim() + '…';\n}\n\n// WordPress POST TITLE (the actual title shown on the page/browser tab): the exact catchy_title\n// from the monthly JSON verbatim - no AI rewriting.\nconst titleHint = (data.originalFormInput && data.originalFormInput.TitleHint) || '';\nconst postTitle = titleHint\n  ? titleHint\n  : (outline.seoTitle\n      ? outline.seoTitle\n      : (kw.charAt(0).toUpperCase() + kw.slice(1) + ' — Complete Guide'));\n\n// SEARCH-ENGINE SEO TITLE (sent to AIOSEO, separate from the post title above): prioritizes your\n// curated seo_title from the monthly JSON, falls back to AI-generated, then to the post title itself.\nconst curatedSeoTitle = (data.originalFormInput && data.originalFormInput.SeoTitle) || '';\nconst seoTitle = curatedSeoTitle\n  ? curatedSeoTitle\n  : (outline.seoTitle ? outline.seoTitle : postTitle);\n\n// META DESCRIPTION (sent to AIOSEO): prioritizes your curated description from the monthly JSON,\n// falls back to AI-generated. Always truncated cleanly at a word boundary, never mid-sentence.\nconst curatedMetaDesc = (data.originalFormInput && data.originalFormInput.MetaDescription) || '';\nconst metaDesc = curatedMetaDesc\n  ? truncateClean(curatedMetaDesc, 160)\n  : (outline.metaDescription\n      ? truncateClean(outline.metaDescription, 160)\n      : truncateClean('Learn everything about ' + kw + ' in this expert-written, comprehensive guide.', 160));\n\n// ── SLUG (derived from the curated SEO title, unique per post - NOT from primaryKeyword,\n// since primaryKeyword/secondary_keywords are often shared across every post in a category,\n// which caused every post in the same category to get an identical, mismatched slug) ─────\nconst slugSource = curatedSeoTitle || seoTitle || outline.slugUrl || kw;\nconst slug = slugSource.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');\n\nconst excerpt = outline.excerpt\n  ? outline.excerpt\n  : ('Discover everything you need to know about ' + kw + '. This in-depth guide covers key concepts, practical tips, and expert insights.');\n\n// ── 4. TAGS ───────────────────────────────────────────────────\nconst tagList = Array.isArray(outline.tags) && outline.tags.length > 0\n  ? outline.tags\n  : [kw];\n\n// ── 5. YOAST SEO META ───────────────────────────────────────────\nconst yoastMeta = {\n  _yoast_wpseo_focuskw: kw,\n  _yoast_wpseo_title: seoTitle + ' %%sep%% %%sitename%%',\n  _yoast_wpseo_metadesc: metaDesc,\n  _yoast_wpseo_opengraph_title: seoTitle,\n  _yoast_wpseo_opengraph_description: metaDesc,\n  _yoast_wpseo_twitter_title: seoTitle,\n  _yoast_wpseo_twitter_description: metaDesc\n};\n\n// NOTE: the old auto-generated schema FAQ block (Yoast faq-block) was removed —\n// it duplicated the real FAQ section already in the article body, and its answer-matching\n// logic was brittle (falling back to generic \"See our comprehensive guide above\" text\n// whenever it couldn't match a question to a heading). The real inline \"## Frequently Asked\n// Questions\" section already converts to proper Gutenberg blocks via the normal parser above,\n// so it's the single source of truth for FAQ content now - no separate schema block needed.\n\n// ── STATIC FOOTER (identical on every post) ─────────────────────\nconst STATIC_FOOTER = `<!-- wp:separator --><hr class=\"wp-block-separator has-alpha-channel-opacity\"/><!-- /wp:separator -->\n\n<!-- wp:heading {\"level\":2} --><h2 class=\"wp-block-heading\" id=\"get-a-free-quote\">Get a Free Quote</h2><!-- /wp:heading -->\n\n<!-- wp:paragraph --><p>Talk to <strong>TechBliss Solutions</strong> — your trusted technology and digital marketing partner in India.</p><!-- /wp:paragraph -->\n\n<!-- wp:paragraph --><p><strong>TechBliss Solutions</strong></p><!-- /wp:paragraph -->\n\n<!-- wp:paragraph --><p>Mobile Number:&nbsp; +91 9716813099</p><!-- /wp:paragraph -->\n\n<!-- wp:paragraph --><p>Website:&nbsp; <a href=\"https://techbliss.in\" target=\"_blank\" rel=\"noopener noreferrer\">TechBliss</a></p><!-- /wp:paragraph -->`;\n\nreturn [{ json: {\n  // WordPress post fields\n  title: postTitle,\n  content: gutenbergContent + '\\n\\n' + STATIC_FOOTER,\n  excerpt: excerpt,\n  slug: slug,\n  status: 'publish',\n  comment_status: 'open',\n  ping_status: 'closed',\n  format: 'standard',\n  tags: tagList,\n  meta: yoastMeta,\n\n  // Pass through\n  primaryKeyword: kw,\n  siteUrl: data.siteUrl,\n  siteDomain: data.siteDomain,\n  qcReport: qcReport,\n  uniquenessScore: data.uniquenessScore || 0,\n  internalLinkCandidates: data.internalLinkCandidates || [],\n  externalLinkCandidates: data.externalLinkCandidates || [],\n  outline: outline,\n  blogCategory: data.blogCategory || 'General'\n}}];"
+      },
+      "id": "109dfc23-7946-4089-b0c7-f7901a853126",
+      "name": "Prepare WordPress Post",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "title": "={{ $json.title }}",
+        "additionalFields": {
+          "content": "={{ $json.content }}",
+          "slug": "={{ $json.slug }}",
+          "status": "draft",
+          "commentStatus": "open",
+          "pingStatus": "closed",
+          "categories": "={{ $json.categoryId ? [$json.categoryId] : [] }}"
+        }
+      },
+      "type": "n8n-nodes-base.wordpress",
+      "typeVersion": 1,
+      "position": [
+        848,
+        -272
+      ],
+      "id": "574a4f1e-2eac-4b7a-a69f-3a887979afe4",
+      "name": "Publish to WordPress",
+      "credentials": {
+        "wordpressApi": {
+          "id": "2oGlMXUF7F6jUcuX",
+          "name": "Wordpress account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const wpResponse = $input.first().json;\nconst prepData = $node['Prepare WordPress Post'].json;\nconst qc = prepData.qcReport || {};\n\nconst postId = wpResponse.id || 'N/A';\nconst postUrl = wpResponse.link || (wpResponse.guid && wpResponse.guid.rendered) || 'N/A';\nconst postTitle = (wpResponse.title && wpResponse.title.rendered) || prepData.title || 'N/A';\n\nreturn [{ json: {\n  success: true,\n  message: 'Blog post drafted successfully with full SEO optimisation, internal links, and external references! (Images not generated this run - add manually.)',\n  postId: postId,\n  postUrl: postUrl,\n  title: postTitle,\n  slug: wpResponse.slug || prepData.slug,\n  seoScore: qc.seoScore !== undefined ? qc.seoScore + '/100' : 'N/A',\n  keywordDensity: qc.keywordDensity !== undefined ? qc.keywordDensity + '%' : 'N/A',\n  wordCount: qc.wordCount || 'N/A',\n  readabilityScore: qc.readabilityScore !== undefined ? qc.readabilityScore + ' (Flesch)' : 'N/A',\n  uniquenessScore: prepData.uniquenessScore !== undefined ? prepData.uniquenessScore + '/100' : 'N/A',\n  internalLinksAdded: qc.internalLinkCount !== undefined ? qc.internalLinkCount : 'N/A',\n  externalLinksAdded: qc.externalLinkCount !== undefined ? qc.externalLinkCount : 'N/A',\n  passedQC: qc.passedQC || false,\n  keywordPlacement: qc.keywordPlacement || {},\n  hasCTA: qc.hasCTA || false,\n  hasFAQ: qc.hasFAQ || false,\n  featuredImageGenerated: false,\n  featuredImageUrl: 'N/A (images disabled)',\n  featuredMediaId: 'N/A (images disabled)'\n}}];"
+      },
+      "id": "a578544e-fb0e-4088-8a59-62a9348e2427",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1296,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 11
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -6656,
+        -176
+      ],
+      "id": "f986e62e-5d09-4999-a5b2-c5cc73deae99",
+      "name": "Daily Cron Trigger",
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst prev = $node['Prepare WordPress Post'].json;\n\nconst b64 = data.data && data.data[0] && data.data[0].b64_json;\n\nif (!b64) {\n  return [{ json: { ...prev, imageGenerationFailed: true } }];\n}\n\nconst buffer = Buffer.from(b64, 'base64');\nconst safeSlug = (prev.slug || 'featured-image').toString().slice(0, 60);\nconst filename = `${safeSlug}.png`;\n\nconst binaryData = await this.helpers.prepareBinaryData(buffer, filename, 'image/png');\n\nreturn [{\n  json: { ...prev, imageGenerationFailed: false, imageFilename: filename },\n  binary: { data: binaryData }\n}];"
+      },
+      "id": "16c985c9-5bdc-46d2-9ce8-c13594ee0bf7",
+      "name": "Prepare Image Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        176,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $node['Prepare WordPress Post'].json.siteUrl + '/wp-json/wp/v2/media' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Disposition",
+              "value": "=attachment; filename=\"{{ $json.imageFilename || 'featured-image.png' }}\""
+            },
+            {
+              "name": "Content-Type",
+              "value": "image/png"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "0aee14e8-3ec3-48a2-8029-6021ff2d8b9b",
+      "name": "Upload Image to WordPress Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        400,
+        -48
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "2oGlMXUF7F6jUcuX",
+          "name": "Wordpress account 5"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Uploads the generated image to the WordPress media library. Skipped/failed gracefully if no image was generated (imageGenerationFailed=true)."
+    },
+    {
+      "parameters": {
+        "jsCode": "const mediaResponse = $input.first().json;\nconst prev = $node['Prepare Image Binary'].json;\n\nconst featuredMediaId = (mediaResponse && mediaResponse.id) ? mediaResponse.id : 0;\nconst featuredImageUrl = (mediaResponse && mediaResponse.source_url) ? mediaResponse.source_url : null;\n\nreturn [{ json: { ...prev, featuredMediaId, featuredImageUrl } }];"
+      },
+      "id": "0c1b0a67-80ea-459a-b214-dd4f80284019",
+      "name": "Store Featured Media ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/images/generations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-image-1', prompt: ($json.outline && $json.outline.featuredImagePrompt) ? $json.outline.featuredImagePrompt : ('Professional, high-quality featured blog image about ' + $json.primaryKeyword + ', clean modern editorial style, no text overlay'), size: '1536x1024', n: 1 }) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "4b512143-976c-4edf-913c-a2727eae86bf",
+      "name": "Generate Featured Image (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -96,
+        -144
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "x0TA9j5hlvA64xxA",
+          "name": "OpenAi account 6"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "Generates the featured image with DALL-E 3 using the outline.featuredImagePrompt produced earlier by the SEO Outline Agent. continueOnFail is on so a failed image generation never blocks publishing the post."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "kw-1",
+              "name": "Blog Topic",
+              "value": "={{ $json.Title }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-2",
+              "name": "Target Audience",
+              "value": "small and mid-size business owners",
+              "type": "string"
+            },
+            {
+              "id": "kw-3",
+              "name": "Word Count",
+              "value": "1400",
+              "type": "string"
+            },
+            {
+              "id": "kw-4",
+              "name": "Blog Category",
+              "value": "={{ $json.Category || 'Digital Marketing' }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-5",
+              "name": "Tone",
+              "value": "professional yet conversational",
+              "type": "string"
+            },
+            {
+              "id": "kw-6",
+              "name": "WordPress Site URL",
+              "value": "https://techbliss.in/blog",
+              "type": "string"
+            },
+            {
+              "id": "kw-7",
+              "name": "sheetRowNumber",
+              "value": "={{ $json.row_number }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-8",
+              "name": "SecondaryKeywords",
+              "value": "={{ $json.secondaryKeywords ? $json.secondaryKeywords.join(', ') : '' }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-9",
+              "name": "TitleHint",
+              "value": "={{ $json.TitleHint || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-10",
+              "name": "SeoTitle",
+              "value": "={{ $json.SeoTitle || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "kw-11",
+              "name": "MetaDescription",
+              "value": "={{ $json.MetaDescription || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "16bb89cb-06a4-4ee5-970f-5efd41af6b19",
+      "name": "Map Title Row + Fixed Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -6544,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1UUiPCZMLEtSZnXDkI3Q8_FTcSDmPJrCzvFO4_bjdG9c",
+          "mode": "list",
+          "cachedResultName": "ActivityLog",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UUiPCZMLEtSZnXDkI3Q8_FTcSDmPJrCzvFO4_bjdG9c/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UUiPCZMLEtSZnXDkI3Q8_FTcSDmPJrCzvFO4_bjdG9c/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "465a1918-89d6-411b-bb11-c2ef90e1564b",
+      "name": "Log Blog Post Activity",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1296,
+        -96
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "kdMGh1rPuMVhuVXk",
+          "name": "Google Sheets account 8"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Resolve tag NAME strings -> numeric WordPress term IDs\n// (WP REST API's /posts tags field requires integer IDs, not names)\nconst data = $input.first().json;\nconst siteUrl = data.siteUrl;\nconst names = Array.isArray(data.tags) ? data.tags.filter(Boolean) : [];\nconst tagIds = [];\n\nfor (const name of names) {\n  try {\n    // 1. Search for an existing tag with this name\n    const found = await this.helpers.httpRequestWithAuthentication.call(this, 'wordpressApi', {\n      method: 'GET',\n      url: siteUrl + '/wp-json/wp/v2/tags',\n      qs: { search: name, per_page: 5 },\n      json: true,\n      timeout: 30000\n    });\n    let match = Array.isArray(found) ? found.find(t => t.name.toLowerCase() === name.toLowerCase()) : null;\n\n    // 2. Create it if it doesn't exist yet\n    if (!match) {\n      match = await this.helpers.httpRequestWithAuthentication.call(this, 'wordpressApi', {\n        method: 'POST',\n        url: siteUrl + '/wp-json/wp/v2/tags',\n        body: { name },\n        json: true,\n        timeout: 30000\n      });\n    }\n    if (match && match.id) tagIds.push(match.id);\n  } catch (e) {\n    // Skip a tag that fails to resolve rather than failing the whole run\n  }\n}\n\n// Resolve the category NAME (blogCategory) -> a numeric WordPress category ID the same way.\n// Without this, WordPress falls back to \"Uncategorized\" for every post.\nlet categoryId = null;\nconst categoryName = (data.blogCategory || '').toString().trim();\nif (categoryName) {\n  try {\n    const found = await this.helpers.httpRequestWithAuthentication.call(this, 'wordpressApi', {\n      method: 'GET',\n      url: siteUrl + '/wp-json/wp/v2/categories',\n      qs: { search: categoryName, per_page: 5 },\n      json: true,\n      timeout: 30000\n    });\n    let match = Array.isArray(found) ? found.find(c => c.name.toLowerCase() === categoryName.toLowerCase()) : null;\n\n    if (!match) {\n      match = await this.helpers.httpRequestWithAuthentication.call(this, 'wordpressApi', {\n        method: 'POST',\n        url: siteUrl + '/wp-json/wp/v2/categories',\n        body: { name: categoryName },\n        json: true,\n        timeout: 30000\n      });\n    }\n    if (match && match.id) categoryId = match.id;\n  } catch (e) {\n    // If category resolution fails, WordPress just falls back to Uncategorized - not fatal\n  }\n}\n\nreturn [{ json: { ...data, tagIds, categoryId } }];"
+      },
+      "id": "dd511b8c-fcd0-4050-b9e8-b76ee42a3785",
+      "name": "Resolve WordPress Tags & Category",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        -448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guaranteed \"money page\" internal links — verified against your real sitemap.xml (440 URLs).\n// These are matched against the blog's primary keyword + title and merged\n// on top of the auto-discovered candidates, so every article\n// links back to the correct real service page on techbliss.in.\n\nconst MONEY_PAGES = [\n  { keyword: 'google workspace reseller', title: 'Google Workspace Reseller', url: 'https://techbliss.in/google-workspace-reseller.html' },\n  { keyword: 'google workspace pricing', title: 'Google Workspace Pricing', url: 'https://techbliss.in/google-workspace-pricing.html' },\n  { keyword: 'google workspace renewal', title: 'Google Workspace Renewal', url: 'https://techbliss.in/google-workspace-renewal.html' },\n  { keyword: 'lead generation company', title: 'Lead Generation Company', url: 'https://techbliss.in/lead-generation-company.html' },\n  { keyword: 'digital marketing agency seo', title: 'SEO Services', url: 'https://techbliss.in/seo.html' },\n  { keyword: 'digital marketing agency social media', title: 'Social Media Marketing', url: 'https://techbliss.in/social-media-marketing.html' },\n  { keyword: 'digital marketing agency performance', title: 'Performance Marketing', url: 'https://techbliss.in/performance-marketing.html' },\n  { keyword: 'ai automation agency', title: 'AI Automation Agency', url: 'https://techbliss.in/ai-automation-agency.html' },\n  { keyword: 'social media management', title: 'Social Media Management', url: 'https://techbliss.in/social-media-management.html' },\n  { keyword: 'seo and aeo agency', title: 'SEO and AEO Agency', url: 'https://techbliss.in/seo-aeo-agency.html' },\n  { keyword: 'linkedin automation agency', title: 'LinkedIn Automation Agency', url: 'https://techbliss.in/linkedin-automation-agency.html' },\n  { keyword: 'performance marketing agency', title: 'Performance Marketing Agency', url: 'https://techbliss.in/performance-marketing-agency.html' },\n  { keyword: 'google workspace business starter', title: 'Google Workspace Business Starter', url: 'https://techbliss.in/google-workspace-business-starter.html' },\n  { keyword: 'google workspace business standard', title: 'Google Workspace Business Standard', url: 'https://techbliss.in/google-workspace-business-standard.html' },\n  { keyword: 'google workspace vs microsoft', title: 'Google Workspace vs Microsoft 365 Comparison', url: 'https://techbliss.in/google-workspace-comparison.html' },\n  { keyword: 'google workspace education', title: 'Google Workspace for Education', url: 'https://techbliss.in/google-workspace-education.html' },\n  { keyword: 'contact', title: 'Contact TechBliss', url: 'https://techbliss.in/contact.html' }\n];\n\nconst prev = $input.first().json;\nconst kw = (prev.primaryKeyword || '').toLowerCase();\n\nfunction wordOverlapScore(a, b) {\n  const aw = a.split(/\\s+/).filter(w => w.length > 2);\n  const bw = b.split(/\\s+/).filter(w => w.length > 2);\n  return aw.filter(w => bw.includes(w)).length;\n}\n\nconst scoredMoneyPages = MONEY_PAGES\n  .map(p => ({ ...p, relevance: wordOverlapScore(kw, p.keyword) * 10 + (kw.includes(p.keyword.split(' ')[0]) ? 5 : 0) }))\n  .sort((a, b) => b.relevance - a.relevance);\n\nconst merged = scoredMoneyPages.slice(0, 6);\n\nreturn [{ json: { ...prev, internalLinkCandidates: merged } }];"
+      },
+      "id": "ba57a3ee-92e0-4111-9ab8-0a85ee477afc",
+      "name": "Add Money Page Links",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -5200,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst prompts = (data.outline && data.outline.inContentImagePrompts) || [];\nconst items = [];\nfor (let idx = 0; idx < Math.min(prompts.length, 3); idx++) {\n  items.push({ json: { ...data, imagePromptIndex: idx, imagePrompt: prompts[idx] } });\n}\nreturn items;"
+      },
+      "id": "5bf0b324-40dd-4b5c-9b0a-92894787abe8",
+      "name": "Split Image Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        -448
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/images/generations",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'gpt-image-1', prompt: $json.imagePrompt, size: '1536x1024', n: 1 }) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "b53b686e-096a-4bdc-8c0b-50ace49b3a6c",
+      "name": "Generate In-Content Image (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -288,
+        -448
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "x0TA9j5hlvA64xxA",
+          "name": "OpenAi account 6"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const resp = $input.first().json;\nconst prev = $input.first().json;\nconst b64 = resp.data && resp.data[0] && resp.data[0].b64_json;\nif (!b64) return [{ json: { ...prev, imageFailed: true } }];\nconst buffer = Buffer.from(b64, 'base64');\nconst idx = prev.imagePromptIndex;\nconst filename = `in-content-image-${idx + 1}.png`;\nconst binaryData = await this.helpers.prepareBinaryData(buffer, filename, 'image/png');\nreturn [{ json: { ...prev, imageFailed: false, imageFilename: filename }, binary: { data: binaryData } }];"
+      },
+      "id": "940dc3f4-d27c-43ff-9eac-254b76b96810",
+      "name": "Prepare In-Content Image Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        -448
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.siteUrl + '/wp-json/wp/v2/media' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Disposition",
+              "value": "={{ 'attachment; filename=\"' + $json.imageFilename + '\"' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "f77bf341-c119-435a-9050-533927ff8e70",
+      "name": "Upload In-Content Image to WP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        176,
+        -448
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "2oGlMXUF7F6jUcuX",
+          "name": "Wordpress account 5"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const uploadResults = $input.all(); // WP media API responses (source_url, id, ...)\nconst promptData = $('Prepare In-Content Image Binary').all(); // same items, still carrying imagePrompt/imagePromptIndex\nconst base = $('Merge After QC').first().json; // original full article data, untouched by the image branching above\n\nconst images = uploadResults\n  .map((r, i) => {\n    const prompt = promptData[i] ? promptData[i].json : {};\n    if (!r.json || !r.json.source_url) return null;\n    return { url: r.json.source_url, mediaId: r.json.id, alt: (prompt.imagePrompt || '').slice(0, 100) };\n  })\n  .filter(Boolean)\n  .sort((a, b) => 0); // already in original order\n\nreturn [{ json: { ...base, inContentImages: images } }];"
+      },
+      "id": "d803f8f6-6633-4096-919d-b94bccc62720",
+      "name": "Aggregate In-Content Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// MONTHLY TITLE LIST — paste your new 30-title JSON here every month\n// Replace the object below with your fresh export and re-save this node.\n// Structure required: { \"blogs\": [ { \"category\", \"seo_title\", \"catchy_title\", \"secondary_keywords\": [], \"description\", \"character_count\" }, ... ] }\n// ============================================================\nconst data = {\"blogs\": [{\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Buy Google Workspace from an Authorized Reseller in India\", \"catchy_title\": \"Where Smart Indian Businesses Are Actually Buying Google Workspace From in 2026\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Buy Google Workspace from an authorized reseller in India and get GST billing, free migration, and fast local support for your team.\", \"character_count\": 132}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Best Google Workspace Reseller in India for Businesses\", \"catchy_title\": \"Best Google Workspace Reseller in India for Businesses\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Find the best Google Workspace reseller in India for businesses with fair pricing, quick setup, and reliable ongoing customer support.\", \"character_count\": 134}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Google Workspace Reseller with Free Migration & Support\", \"catchy_title\": \"Google Workspace Reseller with Free Migration & Support \\u2014 Save Lakhs on Setup\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Choose a Google Workspace reseller with free migration and support to move your email, files, and contacts without any downtime at all.\", \"character_count\": 135}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Affordable Google Workspace Reseller for SMEs\", \"catchy_title\": \"Affordable Google Workspace Reseller for SMEs \\u2014 Stop Overpaying Today\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Get an affordable Google Workspace reseller for SMEs offering transparent pricing, easy onboarding, and flexible monthly billing options.\", \"character_count\": 137}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Google Workspace Reseller for Startups in India\", \"catchy_title\": \"What Every Startup Gets Wrong \\u2014 Choose the Right Google Workspace Reseller for Startups in India\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"A trusted Google Workspace reseller for startups in India offers fast setup, flexible licenses, and pricing built for early-stage teams.\", \"character_count\": 136}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Buy Google Workspace Licenses Online in India\", \"catchy_title\": \"Before You Pay: How to Buy Google Workspace Licenses Online in India\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Buy Google Workspace licenses online in India in just minutes with instant activation and fully GST-compliant billing invoices.\", \"character_count\": 127}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Switch to a Google Workspace Reseller Without Downtime\", \"catchy_title\": \"Switching Providers? Switch to a Google Workspace Reseller Without Downtime\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Switch to a Google Workspace reseller without downtime using a carefully planned migration that keeps your business email running.\", \"character_count\": 130}, {\"category\": \"Google Workspace Reseller\", \"seo_title\": \"Google Workspace Reseller vs Google Direct\", \"catchy_title\": \"Buying Direct or Through a Reseller \\u2014 The One Mistake Costing You Money\", \"secondary_keywords\": [\"google workspace business starter\", \"google workspace starter\", \"gmail business starter\", \"google workspace reseller\", \"google workspace reseller in india\", \"google workspace reseller price\"], \"description\": \"Google Workspace reseller vs Google direct: compare pricing, support quality, and billing flexibility to see what suits your business.\", \"character_count\": 134}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Google Workspace Pricing India: Choose the Right Plan\", \"catchy_title\": \"The Real Google Workspace Pricing India Nobody Talks About \\u2014 Choose the Right Plan (2026)\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"Compare Google Workspace pricing India options and choose the right plan based on storage needs, team size, and required features.\", \"character_count\": 130}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Google Workspace Business Standard Pricing Explained\", \"catchy_title\": \"Get the Best Google Workspace Business Standard Pricing \\u2014 Don't Overpay for Unused Features\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"Google Workspace Business Standard pricing explained in detail, covering storage, video meetings, and value for growing businesses.\", \"character_count\": 131}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Compare Google Workspace Pricing Plans for Businesses\", \"catchy_title\": \"We Compared Google Workspace Pricing Plans for Businesses So You Don't Have to Guess\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"Compare Google Workspace pricing plans for businesses to match storage limits, video capacity, and total cost to your team size.\", \"character_count\": 128}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Google Workspace Cost for Small Businesses in India\", \"catchy_title\": \"What Small Businesses Actually Pay: The Real Google Workspace Cost for Small Businesses in India\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"See the real Google Workspace cost for small businesses in India, billed in INR with no hidden GST or currency surprises.\", \"character_count\": 121}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Google Workspace vs Microsoft 365 Pricing\", \"catchy_title\": \"Google Workspace vs Microsoft 365 Pricing \\u2014 Which One Is Quietly Costing You More?\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"Google Workspace vs Microsoft 365 pricing compared across storage, apps, and support to help you choose the right office suite.\", \"character_count\": 127}, {\"category\": \"Google Workspace Pricing\", \"seo_title\": \"Best Google Workspace Pricing for SMEs\", \"catchy_title\": \"The Cheapest Way SMEs Are Getting the Best Google Workspace Pricing for SMEs (2026)\", \"secondary_keywords\": [\"google workspace pricing india\", \"google workspace business starter price\", \"workspace business starter price\", \"google workspace price in india\"], \"description\": \"Get the best Google Workspace pricing for SMEs with bundled support, free migration, and predictable, transparent monthly billing.\", \"character_count\": 130}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Google Workspace Renewal Price in India\", \"catchy_title\": \"Get the Best Google Workspace Renewal Price in India \\u2014 Don't Overpay on Renewal\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"Check your Google Workspace renewal price in India well before auto-renewal to avoid overpaying on your next annual billing cycle.\", \"character_count\": 130}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Renew Google Workspace Through an Authorized Reseller\", \"catchy_title\": \"Renewing Direct? Renew Google Workspace Through an Authorized Reseller Instead\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"Renew Google Workspace through an authorized reseller for better pricing, local GST invoicing, and a dedicated support contact.\", \"character_count\": 127}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Google Workspace Renewal vs Buying New Licenses\", \"catchy_title\": \"Google Workspace Renewal vs Buying New Licenses \\u2014 What's Right for You\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"Google Workspace renewal vs buying new licenses: align billing dates carefully to avoid losing your existing volume discount rate.\", \"character_count\": 130}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Why Renew Google Workspace Through a Partner\", \"catchy_title\": \"Why Businesses Are Quietly Choosing to Renew Google Workspace Through a Partner\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"Learn why smart businesses renew Google Workspace through a partner for better pricing and proactive renewal date reminders.\", \"character_count\": 124}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Google Workspace Renewal for Small Businesses\", \"catchy_title\": \"The Renewal Trap: What Small Businesses Must Know About Google Workspace Renewal\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"A simple guide to Google Workspace renewal for small businesses, covering license audits, pricing checks, and renewal timing tips.\", \"character_count\": 130}, {\"category\": \"Google Workspace Renewal\", \"seo_title\": \"Google Workspace Renewal for Enterprises\", \"catchy_title\": \"What Enterprises Should Know Before Their Next Google Workspace Renewal for Enterprises\", \"secondary_keywords\": [\"google workspace renewal price\", \"google workspace renewal price india\", \"google workspace renewal through reseller\", \"Google Workspace Renewal for Enterprises\"], \"description\": \"Plan your Google Workspace renewal for enterprises early to protect volume discounts and preserve custom security configurations.\", \"character_count\": 129}, {\"category\": \"Digital Marketing Agency\", \"seo_title\": \"Best Digital Marketing Agency in Delhi NCR\", \"catchy_title\": \"Why Most Agencies Fail \\u2014 Meet the Best Digital Marketing Agency in Delhi NCR\", \"secondary_keywords\": [\"best digital marketing company in delhi\", \"digital marketing agency in delhi ncr\", \"digital marketing packages\", \"hire digital marketing agency\", \"digital agency pricing\", \"digital marketing services pricing\"], \"description\": \"Hire the best digital marketing agency in Delhi NCR for SEO, PPC, and social media strategies that actually drive measurable results.\", \"character_count\": 133}, {\"category\": \"Digital Marketing Agency\", \"seo_title\": \"Hire a Digital Marketing Agency That Delivers ROI\", \"catchy_title\": \"Tired of Empty Promises? Hire a Digital Marketing Agency That Delivers ROI\", \"secondary_keywords\": [\"best digital marketing company in delhi\", \"digital marketing agency in delhi ncr\", \"digital marketing packages\", \"hire digital marketing agency\", \"digital agency pricing\", \"digital marketing services pricing\"], \"description\": \"Hire a digital marketing agency that delivers ROI through transparent reporting and campaigns built around real conversion data.\", \"character_count\": 128}, {\"category\": \"Digital Marketing Agency\", \"seo_title\": \"Affordable Digital Marketing Packages for Businesses\", \"catchy_title\": \"The Truth About Affordable Digital Marketing Packages for Businesses \\u2014 What Nobody Tells You\", \"secondary_keywords\": [\"best digital marketing company in delhi\", \"digital marketing agency in delhi ncr\", \"digital marketing packages\", \"hire digital marketing agency\", \"digital agency pricing\", \"digital marketing services pricing\"], \"description\": \"Explore affordable digital marketing packages for businesses covering SEO, social media, and paid ads that fit a limited budget.\", \"character_count\": 128}, {\"category\": \"Digital Marketing Agency\", \"seo_title\": \"Best Digital Marketing Company for Lead Generation\", \"catchy_title\": \"How the Best Digital Marketing Company for Lead Generation Actually Gets Results\", \"secondary_keywords\": [\"best digital marketing company in delhi\", \"digital marketing agency in delhi ncr\", \"digital marketing packages\", \"hire digital marketing agency\", \"digital agency pricing\", \"digital marketing services pricing\"], \"description\": \"Work with the best digital marketing company for lead generation to fill your sales pipeline with genuinely qualified prospects.\", \"character_count\": 128}, {\"category\": \"Digital Marketing Agency\", \"seo_title\": \"Digital Marketing Agency with SEO & PPC Expertise\", \"catchy_title\": \"SEO or PPC? Why the Best Digital Marketing Agency with SEO & PPC Expertise Doesn't Choose Just One\", \"secondary_keywords\": [\"best digital marketing company in delhi\", \"digital marketing agency in delhi ncr\", \"digital marketing packages\", \"hire digital marketing agency\", \"digital agency pricing\", \"digital marketing services pricing\"], \"description\": \"Choose a digital marketing agency with SEO and PPC expertise for both long-term organic growth and immediate paid visibility.\", \"character_count\": 125}, {\"category\": \"SEO & AEO\", \"seo_title\": \"Best SEO Company in Delhi for Business Growth\", \"catchy_title\": \"Why Most Delhi Companies Can't Get You There \\u2014 Meet the Best SEO Company in Delhi for Business Growth\", \"secondary_keywords\": [\"seo pricing india\", \"seo company in delhi\", \"seo services in delhi\", \"seo agency in delhi\", \"best seo company in delhi\", \"best seo agency in delhi\"], \"description\": \"Partner with the best SEO company in Delhi for business growth, backed by proven rankings, transparent reports, and real traffic.\", \"character_count\": 129}, {\"category\": \"SEO & AEO\", \"seo_title\": \"SEO Services in Delhi That Generate Leads\", \"catchy_title\": \"Ranking But Not Converting? Get SEO Services in Delhi That Actually Generate Leads\", \"secondary_keywords\": [\"seo pricing india\", \"seo company in delhi\", \"seo services in delhi\", \"seo agency in delhi\", \"best seo company in delhi\", \"best seo agency in delhi\"], \"description\": \"Get SEO services in Delhi that generate leads through conversion-focused content, technical fixes, and local search optimization.\", \"character_count\": 129}, {\"category\": \"SEO & AEO\", \"seo_title\": \"Hire an SEO Agency with Proven Results\", \"catchy_title\": \"Before You Hire Anyone: Hire an SEO Agency with Proven Results Instead\", \"secondary_keywords\": [\"seo pricing india\", \"seo company in delhi\", \"seo services in delhi\", \"seo agency in delhi\", \"best seo company in delhi\", \"best seo agency in delhi\"], \"description\": \"Hire an SEO agency with proven results, backed by real client case studies and transparent monthly ranking and traffic reports.\", \"character_count\": 127}, {\"category\": \"SEO & AEO\", \"seo_title\": \"SEO Pricing in India for Small Businesses\", \"catchy_title\": \"SEO Pricing Is All Over the Place \\u2014 Here's the Real SEO Pricing in India for Small Businesses\", \"secondary_keywords\": [\"seo pricing india\", \"seo company in delhi\", \"seo services in delhi\", \"seo agency in delhi\", \"best seo company in delhi\", \"best seo agency in delhi\"], \"description\": \"Understand SEO pricing in India for small businesses before choosing a package that genuinely fits your available monthly budget.\", \"character_count\": 129}, {\"category\": \"SEO & AEO\", \"seo_title\": \"SEO & AEO Services for Higher Search Visibility\", \"catchy_title\": \"AEO Is Quietly Replacing SEO \\u2014 Get SEO & AEO Services for Higher Search Visibility\", \"secondary_keywords\": [\"seo pricing india\", \"seo company in delhi\", \"seo services in delhi\", \"seo agency in delhi\", \"best seo company in delhi\", \"best seo agency in delhi\"], \"description\": \"Get SEO and AEO services for higher search visibility across Google search and AI-powered answer engines like ChatGPT and Gemini.\", \"character_count\": 129}, {\"category\": \"AI Automation\", \"seo_title\": \"AI Automation Agency for Business Growth\", \"catchy_title\": \"AI Automation Agency for Business Growth \\u2014 Do More With Less\", \"secondary_keywords\": [\"ai automation agency\", \"ai automation service\", \"AI Automation for Lead Generation\", \"Hire an AI Automation Company in India\"], \"description\": \"Work with an AI automation agency for business growth to automate repetitive sales, support, and daily operations workflows.\", \"character_count\": 124}, {\"category\": \"AI Automation\", \"seo_title\": \"Hire an AI Automation Company in India\", \"catchy_title\": \"Hire an AI Automation Company in India \\u2014 Before Your Competitors Do\", \"secondary_keywords\": [\"ai automation agency\", \"ai automation service\", \"AI Automation for Lead Generation\", \"Hire an AI Automation Company in India\"], \"description\": \"Hire an AI automation company in India for affordable, skilled workflow automation, chatbot development, and CRM integrations.\", \"character_count\": 126}, {\"category\": \"AI Automation\", \"seo_title\": \"AI Chatbot Development for Customer Support\", \"catchy_title\": \"Struggling With Support Volume? Get AI Chatbot Development for Customer Support\", \"secondary_keywords\": [\"ai automation agency\", \"ai automation service\", \"AI Automation for Lead Generation\", \"Hire an AI Automation Company in India\"], \"description\": \"Invest in AI chatbot development for customer support to handle common customer queries instantly, any time of day or night.\", \"character_count\": 124}, {\"category\": \"AI Automation\", \"seo_title\": \"AI Automation for Lead Generation\", \"catchy_title\": \"Stop Chasing Leads Manually \\u2014 Use AI Automation for Lead Generation Instead\", \"secondary_keywords\": [\"ai automation agency\", \"ai automation service\", \"AI Automation for Lead Generation\", \"Hire an AI Automation Company in India\"], \"description\": \"Use AI automation for lead generation to qualify website prospects and follow up automatically, without constant manual effort.\", \"character_count\": 127}, {\"category\": \"AI Automation\", \"seo_title\": \"AI Automation Agency in Delhi NCR\", \"catchy_title\": \"Why Businesses in Delhi NCR Are Switching to This AI Automation Agency in Delhi NCR\", \"secondary_keywords\": [\"ai automation agency\", \"ai automation service\", \"AI Automation for Lead Generation\", \"Hire an AI Automation Company in India\"], \"description\": \"Work with an AI automation agency in Delhi NCR to modernize daily business operations with local, hands-on technical support.\", \"character_count\": 125}, {\"category\": \"Lead Generation\", \"seo_title\": \"Best B2B Lead Generation Company in India\", \"catchy_title\": \"We Ranked the Best B2B Lead Generation Company in India \\u2014 See Who's #1\", \"secondary_keywords\": [\"b2b lead generation companies in india\", \"lead generation agency india\", \"lead generation companies in india\", \"b2b lead generation india\", \"it lead generation companies in india\", \"top b2b lead generation companies in india\"], \"description\": \"Hire the best B2B lead generation company in India for outbound outreach, LinkedIn prospecting, and content-driven pipeline growth.\", \"character_count\": 131}, {\"category\": \"Lead Generation\", \"seo_title\": \"Hire a Lead Generation Agency That Delivers Sales\", \"catchy_title\": \"Stop Settling for Leads That Don't Convert \\u2014 Hire a Lead Generation Agency That Delivers Sales\", \"secondary_keywords\": [\"b2b lead generation companies in india\", \"lead generation agency india\", \"lead generation companies in india\", \"b2b lead generation india\", \"it lead generation companies in india\", \"top b2b lead generation companies in india\"], \"description\": \"Hire a lead generation agency that delivers sales, not just raw contacts, by working closely and consistently with your sales team.\", \"character_count\": 131}, {\"category\": \"Lead Generation\", \"seo_title\": \"B2B Lead Generation Services for SMEs\", \"catchy_title\": \"B2B Lead Generation Services for SMEs That Actually Move the Needle\", \"secondary_keywords\": [\"b2b lead generation companies in india\", \"lead generation agency india\", \"lead generation companies in india\", \"b2b lead generation india\", \"it lead generation companies in india\", \"top b2b lead generation companies in india\"], \"description\": \"Get B2B lead generation services for SMEs built around a tight ideal customer profile and efficient, targeted outbound outreach.\", \"character_count\": 128}, {\"category\": \"Lead Generation\", \"seo_title\": \"IT Lead Generation Company for Business Growth\", \"catchy_title\": \"Struggling to Fill Your Pipeline? This IT Lead Generation Company for Business Growth Can Help\", \"secondary_keywords\": [\"b2b lead generation companies in india\", \"lead generation agency india\", \"lead generation companies in india\", \"b2b lead generation india\", \"it lead generation companies in india\", \"top b2b lead generation companies in india\"], \"description\": \"Partner with an IT lead generation company for business growth using technical content and focused account-based marketing tactics.\", \"character_count\": 131}, {\"category\": \"Lead Generation\", \"seo_title\": \"Lead Generation Agency for SaaS Companies\", \"catchy_title\": \"Lead Generation Agency for SaaS Companies \\u2014 Built to Fill Your Pipeline, Not Just Your Inbox\", \"secondary_keywords\": [\"b2b lead generation companies in india\", \"lead generation agency india\", \"lead generation companies in india\", \"b2b lead generation india\", \"it lead generation companies in india\", \"top b2b lead generation companies in india\"], \"description\": \"Work with a lead generation agency for SaaS companies focused on trial signups, product demos, and long-term subscriber growth.\", \"character_count\": 127}, {\"category\": \"LinkedIn + Performance Marketing\", \"seo_title\": \"LinkedIn Lead Generation Services for B2B Businesses\", \"catchy_title\": \"Stop Scrolling, Start Converting \\u2014 LinkedIn Lead Generation Services for B2B Businesses\", \"secondary_keywords\": [\"linkedin marketing agency\", \"linkedin marketing service\", \"linkedin lead generation\", \"linkedin advertising costs\", \"performance marketing agency\", \"performance marketing services\"], \"description\": \"Use LinkedIn lead generation services for B2B businesses to reach real decision-makers through targeted, personalized outreach.\", \"character_count\": 127}, {\"category\": \"LinkedIn + Performance Marketing\", \"seo_title\": \"Hire a LinkedIn Marketing Agency in India\", \"catchy_title\": \"Most LinkedIn Marketing Agencies Are Doing It Wrong \\u2014 Here's What Works\", \"secondary_keywords\": [\"linkedin marketing agency\", \"linkedin marketing service\", \"linkedin lead generation\", \"linkedin advertising costs\", \"performance marketing agency\", \"performance marketing services\"], \"description\": \"Hire a LinkedIn marketing agency in India for content strategy, personalized outreach, and paid campaigns that build real authority.\", \"character_count\": 132}, {\"category\": \"LinkedIn + Performance Marketing\", \"seo_title\": \"Google Ads Management for Higher ROI\", \"catchy_title\": \"Is Your Google Ads Budget Actually Working? Most Businesses Never Check\", \"secondary_keywords\": [\"linkedin marketing agency\", \"linkedin marketing service\", \"linkedin lead generation\", \"linkedin advertising costs\", \"performance marketing agency\", \"performance marketing services\"], \"description\": \"Get Google Ads management for higher ROI through continuous keyword refinement, bid adjustments, and landing page optimization.\", \"character_count\": 127}, {\"category\": \"LinkedIn + Performance Marketing\", \"seo_title\": \"Best Performance Marketing Agency in India\", \"catchy_title\": \"The Performance Marketing Agency Difference Nobody Explains Properly\", \"secondary_keywords\": [\"linkedin marketing agency\", \"linkedin marketing service\", \"linkedin lead generation\", \"linkedin advertising costs\", \"performance marketing agency\", \"performance marketing services\"], \"description\": \"Choose the best performance marketing agency in India with transparent, data-backed reporting across every advertising channel.\", \"character_count\": 127}, {\"category\": \"LinkedIn + Performance Marketing\", \"seo_title\": \"Hire a Performance Marketing Agency That Delivers Results\", \"catchy_title\": \"Why \\\"Results-Driven\\\" Performance Marketing Agencies Rarely Deliver Results\", \"secondary_keywords\": [\"linkedin marketing agency\", \"linkedin marketing service\", \"linkedin lead generation\", \"linkedin advertising costs\", \"performance marketing agency\", \"performance marketing services\"], \"description\": \"Hire a performance marketing agency that delivers results tied directly to real revenue, not just clicks or vanity impressions.\", \"character_count\": 127}]};\n\nreturn [{ json: data }];"
+      },
+      "id": "cdb8eb1f-5fed-4011-825a-fd8709877d36",
+      "name": "Blog Titles Data (Monthly)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6880,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst blogs = data.blogs || [];\n\nreturn blogs.map(b => ({\n  json: {\n    title: b.catchy_title,\n    category: b.category,\n    secondaryKeywords: b.secondary_keywords || [],\n    seoTitle: b.seo_title || '',\n    metaDescription: b.description || ''\n  }\n}));"
+      },
+      "id": "b9d5661c-1b0d-4fef-8277-969ca958872c",
+      "name": "Flatten Blog Titles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6800,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Picks today's blog from the monthly list using the day of the month as the index.\n// Day 1 -> blogs[0], Day 2 -> blogs[1], etc. Wraps around safely if the list is shorter/longer than 30.\nconst items = $input.all().map(i => i.json);\nconst today = new Date();\nconst dayOfMonth = today.getDate(); // 1-31\nconst index = (dayOfMonth - 1) % items.length;\nconst picked = items[index];\n\n// Derive a SHORT, real SEO primary keyword (2-5 words) instead of using the full catchy title.\n// Prefer the first secondary keyword (a genuine researched search term with real volume data)\n// since those are actual short-tail keywords, not full sentences. Fall back to the category name.\nconst secondaryKeywords = picked.secondaryKeywords || [];\nconst shortPrimaryKeyword = (secondaryKeywords[0] || picked.category || picked.title).toLowerCase();\n\nreturn [{ json: {\n  Title: shortPrimaryKeyword,       // drives SEO/keyword-density logic - now a real short keyword\n  TitleHint: picked.title,          // the polished catchy title - used as the actual WP post title\n  Category: picked.category,\n  secondaryKeywords: secondaryKeywords,\n  SeoTitle: picked.seoTitle || '',           // curated search-engine title (AIOSEO), separate from the post title\n  MetaDescription: picked.metaDescription || '', // curated meta description (AIOSEO)\n  dayOfMonth,\n  pickedIndex: index\n} }];"
+      },
+      "id": "779b198e-c862-43e1-978f-6ff32a88df08",
+      "name": "Pick Today's Title",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -6656,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// FINAL ENFORCEMENT PASS.\n// 1. Strips/replaces any invalid internal link (wrong domain, blog post, hallucinated URL).\n// 2. Forces real internal links to appear at evenly-spread intervals through the body\n//    (not bunched in one place) - inserted by code, not left up to the AI.\n// 3. Removes duplicate H2 sections.\n// 4. Forces FAQ to sit immediately before Conclusion.\n\nconst data = $input.first().json;\nlet article = data.articleFinal || '';\n\nconst REAL_LANDING_PAGES = new Set([\"https://techbliss.in/about.html\", \"https://techbliss.in/ad-campaign.html\", \"https://techbliss.in/ai-agents.html\", \"https://techbliss.in/ai-automation-agency.html\", \"https://techbliss.in/ai-influencers.html\", \"https://techbliss.in/ai-solution.html\", \"https://techbliss.in/aws.html\", \"https://techbliss.in/backup-archiving.html\", \"https://techbliss.in/branding.html\", \"https://techbliss.in/career.html\", \"https://techbliss.in/celebrity-endorsements.html\", \"https://techbliss.in/chatbot.html\", \"https://techbliss.in/cloud-business-automation.html\", \"https://techbliss.in/cloud-telephony.html\", \"https://techbliss.in/commercial-corporate.html\", \"https://techbliss.in/contact.html\", \"https://techbliss.in/crm.html\", \"https://techbliss.in/cro.html\", \"https://techbliss.in/custom-development.html\", \"https://techbliss.in/customers.html\", \"https://techbliss.in/data-migration.html\", \"https://techbliss.in/data-security.html\", \"https://techbliss.in/ecommerce-marketing.html\", \"https://techbliss.in/ecommerce-product-videos.html\", \"https://techbliss.in/ecommerce-website.html\", \"https://techbliss.in/employee-training.html\", \"https://techbliss.in/endtoend-support.html\", \"https://techbliss.in/erp-solution.html\", \"https://techbliss.in/event-marketing.html\", \"https://techbliss.in/exhibition-marketing.html\", \"https://techbliss.in/faq.html\", \"https://techbliss.in/g-suit-training.html\", \"https://techbliss.in/gallery.html\", \"https://techbliss.in/google-cloud-platform.html\", \"https://techbliss.in/google-workspace-business-plus.html\", \"https://techbliss.in/google-workspace-business-standard.html\", \"https://techbliss.in/google-workspace-business-starter.html\", \"https://techbliss.in/google-workspace-comparison.html\", \"https://techbliss.in/google-workspace-education.html\", \"https://techbliss.in/google-workspace-enterprise-plus.html\", \"https://techbliss.in/google-workspace-enterprise-standard.html\", \"https://techbliss.in/google-workspace-essentials.html\", \"https://techbliss.in/google-workspace-frontline-standard.html\", \"https://techbliss.in/google-workspace-frontline-starter.html\", \"https://techbliss.in/google-workspace-pricing.html\", \"https://techbliss.in/google-workspace-renewal.html\", \"https://techbliss.in/google-workspace-reseller.html\", \"https://techbliss.in/google-workspace.html\", \"https://techbliss.in/graphics.html\", \"https://techbliss.in/high-production.html\", \"https://techbliss.in/home-cyber-security.html\", \"https://techbliss.in/hybrid-cloud.html\", \"https://techbliss.in/hybrid.html\", \"https://techbliss.in/inbound-content.html\", \"https://techbliss.in/internet-lease-line.html\", \"https://techbliss.in/ivr.html\", \"https://techbliss.in/lead-generation-company.html\", \"https://techbliss.in/lead-generation.html\", \"https://techbliss.in/linkedin-automation-agency.html\", \"https://techbliss.in/m365-comparison.html\", \"https://techbliss.in/m365-education.html\", \"https://techbliss.in/m365-pricing.html\", \"https://techbliss.in/managed-support.html\", \"https://techbliss.in/microsoft-365-business-basic.html\", \"https://techbliss.in/microsoft-365-business-premium.html\", \"https://techbliss.in/microsoft-365-business-standard.html\", \"https://techbliss.in/microsoft-365-enterprise-e1.html\", \"https://techbliss.in/microsoft-365-enterprise-e3.html\", \"https://techbliss.in/microsoft-365-enterprise-e5.html\", \"https://techbliss.in/microsoft-365-frontline-f1.html\", \"https://techbliss.in/microsoft-365-frontline-f3.html\", \"https://techbliss.in/microsoft-365.html\", \"https://techbliss.in/microsoft-azure.html\", \"https://techbliss.in/mobile-app.html\", \"https://techbliss.in/mpsl.html\", \"https://techbliss.in/network-security.html\", \"https://techbliss.in/partner.html\", \"https://techbliss.in/performance-marketing-agency.html\", \"https://techbliss.in/performance-marketing.html\", \"https://techbliss.in/print-media-marketing.html\", \"https://techbliss.in/saas-solution.html\", \"https://techbliss.in/seo-aeo-agency.html\", \"https://techbliss.in/seo.html\", \"https://techbliss.in/setup-implementation.html\", \"https://techbliss.in/sip-trunk.html\", \"https://techbliss.in/social-media-management.html\", \"https://techbliss.in/social-media-marketing.html\", \"https://techbliss.in/social-media.html\", \"https://techbliss.in/terms-and-conditions.html\", \"https://techbliss.in/ugcsocial-media.html\", \"https://techbliss.in/website.html\", \"https://techbliss.in/zoho-mail-pricing.html\", \"https://techbliss.in/zoho-mail.html\"]);\nconst usedUrls = new Set();\n\n// ---------- 1. Fix/strip invalid links, track which real ones survive and where ----------\narticle = article.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, (match, anchor, url) => {\n  const normalized = url.replace(/^https?:\\/\\/(www\\.)?/, 'https://');\n  if (REAL_LANDING_PAGES.has(normalized) || REAL_LANDING_PAGES.has(url)) {\n    usedUrls.add(normalized);\n    return match;\n  }\n  return anchor;\n});\n\n// ---------- 1b. Strip leftover raw link-dump clutter (redundant with the Explore Services section) ----------\n// Removes lines that are mostly just pipe-separated links with little else, and any\n// \"External reference: ...\" labels the AI sometimes leaves as plain unlinked text.\narticle = article\n  .split('\\n')\n  .filter(line => {\n    const trimmed = line.trim();\n    if (/^external reference:/i.test(trimmed)) return false;\n    // A line that's 2+ markdown links joined mostly by \"|\" and almost nothing else\n    const linkCount = (trimmed.match(/\\[[^\\]]+\\]\\([^)]+\\)/g) || []).length;\n    const strippedOfLinks = trimmed.replace(/\\[[^\\]]+\\]\\([^)]+\\)/g, '').replace(/[\\s|]/g, '');\n    if (linkCount >= 2 && strippedOfLinks.length === 0) return false;\n    return true;\n  })\n  .join('\\n');\n\n// ---------- 2. Split into H2 sections, remove duplicates ----------\nconst sectionRegex = /(?=^##\\s)/m;\nconst sections = article.split(sectionRegex).filter(s => s.length > 0);\nlet preamble = '';\nlet h2Sections = sections;\nif (sections.length && !/^##\\s/.test(sections[0])) {\n  preamble = sections[0];\n  h2Sections = sections.slice(1);\n}\n\n// ---------- 2b. Make the primary keyword itself a hyperlink in the opening paragraph ----------\n// Handles BOTH cases: the keyword appears as plain text, OR already wrapped in **bold** markers\n// (very common, since the SEO rules ask the writer to bold the keyword on first use).\n// Either way it ends up as a real clickable link - bold+linked if it was bold, plain-linked otherwise.\nconst preambleHasRealLink = [...usedUrls].some(u => preamble.includes(u));\nif (!preambleHasRealLink && (data.internalLinkCandidates || []).length > 0) {\n  const firstCandidate = data.internalLinkCandidates.find(c => !usedUrls.has(c.url));\n  const primaryKeyword = (data.primaryKeyword || '').trim();\n\n  if (firstCandidate && preamble.trim().length > 0) {\n    let linked = false;\n    if (primaryKeyword) {\n      const escaped = primaryKeyword.replace(/[.*+?^\\${}()|[\\]\\\\]/g, '\\\\$&');\n\n      // Restrict the search to just the FIRST 2 SENTENCES of the preamble (not the whole intro) -\n      // the keyword should be highlighted/linked early, not buried several sentences in.\n      const sentenceSplit = preamble.match(/[^.!?]+[.!?]+/g) || [preamble];\n      const firstTwoLen = sentenceSplit.slice(0, 2).join('').length;\n      const earlyPart = preamble.slice(0, firstTwoLen);\n      const restPart = preamble.slice(firstTwoLen);\n\n      const boldKwRegex = new RegExp(`\\\\*\\\\*(${escaped})\\\\*\\\\*`, 'i');\n      const plainKwRegex = new RegExp(`(?<!\\\\[)\\\\b(${escaped})\\\\b(?![^\\\\[]*\\\\])`, 'i');\n\n      if (boldKwRegex.test(earlyPart)) {\n        const newEarly = earlyPart.replace(boldKwRegex, (match, inner) => `**[${inner}](${firstCandidate.url})**`);\n        preamble = newEarly + restPart;\n        usedUrls.add(firstCandidate.url);\n        linked = true;\n      } else if (plainKwRegex.test(earlyPart)) {\n        const newEarly = earlyPart.replace(plainKwRegex, (match) => `[${match}](${firstCandidate.url})`);\n        preamble = newEarly + restPart;\n        usedUrls.add(firstCandidate.url);\n        linked = true;\n      }\n    }\n    // Fallback: keyword phrase wasn't found in the first 2 sentences - add a natural linking sentence instead\n    if (!linked) {\n      preamble = preamble.trimEnd() + `\\n\\nLearn more in our [${firstCandidate.title}](${firstCandidate.url}) guide.\\n\\n`;\n      usedUrls.add(firstCandidate.url);\n    }\n  }\n}\n\nconst seenHeadings = new Set();\nh2Sections = h2Sections.filter(s => {\n  const headingMatch = s.match(/^##\\s*(.+)$/m);\n  if (!headingMatch) return true;\n  const normalized = headingMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();\n  if (seenHeadings.has(normalized)) return false;\n  seenHeadings.add(normalized);\n  return true;\n});\n\n// ---------- 3. Force real links at evenly-spread intervals ----------\n// Excludes FAQ/Conclusion sections as insertion targets (a link doesn't belong in the closing sections).\nconst candidates = (data.internalLinkCandidates || []).filter(c => !usedUrls.has(c.url));\nconst isFaqOrConclusion = (s) => /^##\\s*(Frequently Asked Questions|FAQ)/im.test(s) || /^##[^\\n]*conclusion/im.test(s);\nconst eligibleIndexes = h2Sections.map((s, i) => i).filter(i => !isFaqOrConclusion(h2Sections[i]));\n\nif (candidates.length > 0 && eligibleIndexes.length > 0) {\n  const targetCount = Math.min(candidates.length, eligibleIndexes.length); // one link per eligible section, not capped at 4\n  const interval = Math.max(1, Math.floor(eligibleIndexes.length / targetCount));\n  let candidateIdx = 0;\n\n  for (let i = 0; i < targetCount; i++) {\n    const sectionArrayIndex = eligibleIndexes[Math.min(i * interval, eligibleIndexes.length - 1)];\n    const candidate = candidates[candidateIdx];\n    if (!candidate) break;\n    candidateIdx++;\n\n    const sectionText = h2Sections[sectionArrayIndex];\n    // Only add if this section doesn't already have a real link in it\n    const hasRealLinkAlready = [...usedUrls].some(u => sectionText.includes(u));\n    if (!hasRealLinkAlready) {\n      const sentence = `\\n\\nFor more on this, see our [${candidate.title}](${candidate.url}) page.\\n\\n`;\n      h2Sections[sectionArrayIndex] = sectionText.trimEnd() + sentence;\n      usedUrls.add(candidate.url);\n    }\n  }\n}\n\n// ---------- 4. Force FAQ to sit immediately before Conclusion ----------\nconst faqIndex = h2Sections.findIndex(s => /^##\\s*(Frequently Asked Questions|FAQ)/im.test(s));\nconst conclusionIndex = h2Sections.findIndex(s => /^##[^\\n]*conclusion/im.test(s));\n\nif (faqIndex !== -1 && conclusionIndex !== -1 && faqIndex > conclusionIndex) {\n  const faqBlock = h2Sections[faqIndex];\n  h2Sections.splice(faqIndex, 1);\n  const newConclusionIndex = h2Sections.findIndex(s => /^##[^\\n]*conclusion/im.test(s));\n  h2Sections.splice(newConclusionIndex, 0, faqBlock);\n}\n\narticle = preamble + h2Sections.join('');\n\nreturn [{ json: { ...data, articleFinal: article } }];"
+      },
+      "id": "c8dbf2b8-0d7d-4a98-a957-007064b9367f",
+      "name": "Enforce Links, Sources & FAQ Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -400,
+        -448
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $node['Prepare WordPress Post'].json.siteUrl + '/wp-json/wp/v2/posts/' + $json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "wordpressApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ aioseo_meta_data: { title: $node['Prepare WordPress Post'].json.meta._yoast_wpseo_title.replace(' %%sep%% %%sitename%%', ''), description: $node['Prepare WordPress Post'].json.meta._yoast_wpseo_metadesc }, tags: $node['Resolve WordPress Tags & Category'].json.tagIds }) }}",
+        "options": {}
+      },
+      "id": "05fae89e-7cb9-47f5-aeb4-109f534fa22c",
+      "name": "Inject AIOSEO Meta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1072,
+        -272
+      ],
+      "credentials": {
+        "wordpressApi": {
+          "id": "2oGlMXUF7F6jUcuX",
+          "name": "Wordpress account 5"
+        }
+      },
+      "notes": "Requires the WPCode PHP snippet (register-yoast-meta-for-rest.php) to be active on the WordPress site - otherwise WordPress silently ignores these meta fields."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Input Validation1": {
+      "main": [
+        [
+          {
+            "node": "Validation Gate1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation Gate1": {
+      "main": [
+        [
+          {
+            "node": "SERP Fetch (SerpAPI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validation Error Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SERP Fetch (SerpAPI)": {
+      "main": [
+        [
+          {
+            "node": "Parse SERP Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse SERP Data": {
+      "main": [
+        [
+          {
+            "node": "Get Existing WordPress Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Existing WordPress Posts": {
+      "main": [
+        [
+          {
+            "node": "Build Internal Link Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Internal Link Candidates": {
+      "main": [
+        [
+          {
+            "node": "Add Money Page Links",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SEO Outline Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Outline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Outline": {
+      "main": [
+        [
+          {
+            "node": "Draft Article Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Article Agent": {
+      "main": [
+        [
+          {
+            "node": "Store Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Draft": {
+      "main": [
+        [
+          {
+            "node": "Fact-Check Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fact-Check Agent": {
+      "main": [
+        [
+          {
+            "node": "Store Fact-Checked Article",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Fact-Checked Article": {
+      "main": [
+        [
+          {
+            "node": "SEO Optimisation Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SEO Optimisation Agent": {
+      "main": [
+        [
+          {
+            "node": "Store SEO Article1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store SEO Article1": {
+      "main": [
+        [
+          {
+            "node": "Semantic Uniqueness Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Semantic Uniqueness Scoring": {
+      "main": [
+        [
+          {
+            "node": "Uniqueness Gate1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uniqueness Gate1": {
+      "main": [
+        [
+          {
+            "node": "Store Final Article1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uniqueness Rewrite Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uniqueness Rewrite Agent": {
+      "main": [
+        [
+          {
+            "node": "Store Final Article1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Final Article1": {
+      "main": [
+        [
+          {
+            "node": "Quality Validation1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Validation1": {
+      "main": [
+        [
+          {
+            "node": "QC Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QC Gate": {
+      "main": [
+        [
+          {
+            "node": "Merge After QC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "QC Fix Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QC Fix Agent1": {
+      "main": [
+        [
+          {
+            "node": "Store QC Fixed1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store QC Fixed1": {
+      "main": [
+        [
+          {
+            "node": "QC Re-Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QC Re-Validation": {
+      "main": [
+        [
+          {
+            "node": "Merge After QC",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge After QC": {
+      "main": [
+        [
+          {
+            "node": "Enforce Links, Sources & FAQ Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare WordPress Post": {
+      "main": [
+        [
+          {
+            "node": "Resolve WordPress Tags & Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publish to WordPress": {
+      "main": [
+        [
+          {
+            "node": "Inject AIOSEO Meta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload Image to WordPress Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Image to WordPress Media": {
+      "main": [
+        [
+          {
+            "node": "Store Featured Media ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Featured Media ID": {
+      "main": [
+        [
+          {
+            "node": "Resolve WordPress Tags & Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Cron Trigger": {
+      "main": [
+        [
+          {
+            "node": "Blog Titles Data (Monthly)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Title Row + Fixed Config": {
+      "main": [
+        [
+          {
+            "node": "Input Validation1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Success Response": {
+      "main": [
+        [
+          {
+            "node": "Log Blog Post Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Money Page Links": {
+      "main": [
+        [
+          {
+            "node": "SEO Outline Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Image Prompts": {
+      "main": [
+        [
+          {
+            "node": "Generate In-Content Image (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload In-Content Image to WP": {
+      "main": [
+        [
+          {
+            "node": "Aggregate In-Content Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate In-Content Images": {
+      "main": [
+        [
+          {
+            "node": "Prepare WordPress Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (SEO Outline) [1]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SEO Outline Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (Draft) [1]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Draft Article Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (Fact-Check) [1]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Fact-Check Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (SEO Pass) [2]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SEO Optimisation Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (Uniqueness Rewrite) [2]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Uniqueness Rewrite Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq (QC Fix) [2]": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "QC Fix Agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare In-Content Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload In-Content Image to WP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Featured Image (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate In-Content Image (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Prepare In-Content Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Blog Titles Data (Monthly)": {
+      "main": [
+        [
+          {
+            "node": "Flatten Blog Titles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Blog Titles": {
+      "main": [
+        [
+          {
+            "node": "Pick Today's Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Today's Title": {
+      "main": [
+        [
+          {
+            "node": "Map Title Row + Fixed Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enforce Links, Sources & FAQ Order": {
+      "main": [
+        [
+          {
+            "node": "Prepare WordPress Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve WordPress Tags & Category": {
+      "main": [
+        [
+          {
+            "node": "Publish to WordPress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Inject AIOSEO Meta": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true,
+    "errorWorkflow": "5bals9klRZ6J6t39"
+  },
+  "versionId": "223b1226-096e-4d6d-93aa-42a1c0d15f9d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "70ec1061127b96f26ab399b0832cab69083eda69b150cc94ed7a1553b772b07c"
+  },
+  "id": "5bals9klRZ6J6t39",
+  "tags": []
+}
